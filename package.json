@@ -2,7 +2,7 @@
   "name": "latex-suite-vscode",
   "displayName": "LaTeX Suite for VSCode",
   "description": "Fast LaTeX math typing in Markdown and LaTeX: auto-expanding snippets, auto-fractions, matrix shortcuts, and Tab navigation. A port of Obsidian LaTeX Suite.",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "publisher": "qmvis",
   "license": "MIT",
   "icon": "assets/icon.png",
@@ -58,12 +58,12 @@
       {
         "command": "latexSuite.addSnippetFile",
         "category": "LaTeX Suite",
-        "title": "Add Snippet File\u2026"
+        "title": "Add Snippet File…"
       },
       {
         "command": "latexSuite.addVariableFile",
         "category": "LaTeX Suite",
-        "title": "Add Variable File\u2026"
+        "title": "Add Variable File…"
       },
       {
         "command": "latexSuite.expandSnippet",
