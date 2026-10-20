@@ -96,7 +96,19 @@ export function getConfig(document: vscode.TextDocument): LatexSuiteConfig {
 }
 
 export function isSupportedDocument(document: vscode.TextDocument): boolean {
-	return document.languageId === "markdown" || document.languageId === "latex";
+	const extensions = vscode.workspace.getConfiguration("latexSuite", document)
+		.get<string[]>("fileExtensions", [".tex", ".md", ".qmd"]);
+	const filename = document.uri.path.split("/").pop() ?? "";
+	const dot = filename.lastIndexOf(".");
+	const extension = dot >= 0
+		? filename.slice(dot).toLowerCase()
+		: document.isUntitled
+			? document.languageId === "latex" ? ".tex" : document.languageId === "markdown" ? ".md" : ""
+			: "";
+	return extension !== "" && extensions.some(entry => {
+		const normalized = entry.trim().toLowerCase();
+		return (normalized.startsWith(".") ? normalized : `.${normalized}`) === extension;
+	});
 }
 
 function decodeEscapes(value: string): string {

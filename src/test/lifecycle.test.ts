@@ -2,8 +2,8 @@ import * as assert from "node:assert/strict";
 import * as vscode from "vscode";
 import { LatexSuiteController } from "../extension";
 
-// This suite runs in its own host, before the extension activates. Only the
-// pending-wait observation needs private access; construction/disposal are real.
+// This suite runs in its own host and disposes the startup controller before
+// testing fresh controllers. Only pending-wait observation needs private access.
 interface LifecycleObservation {
 	waitForCollapsedSelection(editor: vscode.TextEditor, version: number, offset: number): Promise<boolean>;
 	operationIsCurrent(editor: vscode.TextEditor, version: number, selection: { anchor: number; active: number }): boolean;
@@ -12,11 +12,15 @@ interface LifecycleObservation {
 
 suite("controller lifecycle", () => {
 	let output: vscode.LogOutputChannel;
-	suiteSetup(() => { output = vscode.window.createOutputChannel("Lifecycle tests", { log: true }); });
+	suiteSetup(async () => {
+		const controller = await vscode.extensions.getExtension<vscode.Disposable>("qmvis.latex-suite-vscode")!.activate();
+		controller.dispose();
+		output = vscode.window.createOutputChannel("Lifecycle tests", { log: true });
+	});
 	suiteTeardown(() => output.dispose());
 
 	test("real disposal unregisters commands, cancels pending waits, and invalidates operations", async () => {
-		assert.equal(vscode.extensions.getExtension("qmvis.latex-suite-vscode")!.isActive, false);
+		assert.equal((await vscode.commands.getCommands(true)).includes("latexSuite.internal.waitForIdle"), false);
 		const document = await vscode.workspace.openTextDocument({ language: "plaintext", content: "ab" });
 		const editor = await vscode.window.showTextDocument(document);
 		const controller = new LatexSuiteController(output);

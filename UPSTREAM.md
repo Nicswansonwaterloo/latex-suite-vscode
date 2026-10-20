@@ -20,6 +20,8 @@ them, not all.
   argument; an object without `arguments` matches every argument.
 - `dm` keeps this port's behavior. Upstream 1.13.2 changed how leading newlines
   and blockquotes are handled; that change is not included.
+- File types are configurable with `latexSuite.fileExtensions` (default `.tex`,
+  `.md`, and `.qmd`), including files with other VS Code language IDs.
 - `mk` omits the empty groups that Obsidian inserts to avoid preview flicker.
 - Concealment, previews, file watching, Vim support, and Obsidian-specific
   features such as Excalidraw do not apply to VS Code and are not ported.

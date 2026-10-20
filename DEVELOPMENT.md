@@ -40,7 +40,7 @@ plus the installed and Restricted Mode smoke tests on Linux. It never publishes.
 
 | Area | Rule |
 | --- | --- |
-| Activation | Activate on Markdown and LaTeX only. Do not evaluate custom snippets or read files during activation. |
+| Activation | Activate after startup so configured file extensions work with any language ID. Gate editing and keybindings by `latexSuite.fileExtensions`. Do not evaluate custom snippets or read files during activation. |
 | Lifecycle | Register everything through disposables. Cancel pending editor waits on shutdown and drop stale operations after edits, selection or configuration changes, or disposal. |
 | Workspace Trust | Run custom JavaScript only in trusted workspaces. Keep the four executable-source settings restricted, keep bundled defaults in Restricted Mode, and invalidate caches when trust changes. |
 | Files and configuration | Read through `workspace.fs` and build paths with `Uri.joinPath`; use `fsPath` only for `file:` URIs. Resolve configuration per document and relative paths per workspace folder. |
