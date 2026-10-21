@@ -1,4 +1,4 @@
-name: Publish Marketplace release
+name: Release validation
 
 on:
   push:
@@ -6,10 +6,6 @@ on:
 
 permissions:
   contents: read
-
-concurrency:
-  group: marketplace-release
-  cancel-in-progress: false
 
 jobs:
   validate:
@@ -30,52 +26,3 @@ jobs:
         run: |
           node scripts/check-release.js
           git merge-base --is-ancestor HEAD origin/main
-
-  checks:
-    needs: validate
-    uses: ./.github/workflows/ci.yml
-    with:
-      release: true
-
-  publish:
-    needs: [validate, checks]
-    if: vars.MARKETPLACE_PUBLISH_ENABLED == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    environment: marketplace
-    permissions:
-      contents: read
-      id-token: write
-    env:
-      AZURE_CORE_OUTPUT: none
-      RELEASE_TAG: ${{ github.ref_name }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - name: Install locked publishing tool without lifecycle scripts
-        run: npm ci --ignore-scripts
-      - name: Download the exact tested VSIX from this run
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
-        with:
-          name: marketplace-vsix
-          path: release
-      - name: Check release inputs before authentication
-        env:
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-        run: |
-          test -n "$AZURE_CLIENT_ID" && test -n "$AZURE_TENANT_ID"
-          test -f "release/latex-suite-vscode-${RELEASE_TAG#v}.vsix"
-      - name: Sign in with short-lived Microsoft Entra credentials
-        uses: azure/login@935127ca5bb3c4b02c9c2c10060028383878f33f # v3
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          allow-no-subscriptions: true
-      - name: Publish the tested package
-        run: ./node_modules/.bin/vsce publish --azure-credential --packagePath "release/latex-suite-vscode-${RELEASE_TAG#v}.vsix"

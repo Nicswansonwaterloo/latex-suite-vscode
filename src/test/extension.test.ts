@@ -2,6 +2,7 @@ import * as assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
+import { isSupportedDocument } from "../config";
 
 suite("LaTeX Suite extension", function () {
 	this.timeout(10_000);
@@ -44,6 +45,37 @@ suite("LaTeX Suite extension", function () {
 			keybindings.find((binding) => binding.key === "shift+enter")?.command,
 			"latexSuite.internal.matrixExit",
 		);
+	});
+
+	test("file extensions control shortcuts independently of language and update immediately", async () => {
+		const settings = vscode.workspace.getConfiguration("latexSuite");
+		const previous = settings.inspect<string[]>("fileExtensions")?.globalValue;
+		try {
+			await setExtensionSetting("fileExtensions", undefined);
+			for (const extension of ["tex", "md", "qmd", "QMD"]) {
+				const document = await vscode.workspace.openTextDocument(vscode.Uri.parse(`untitled:/latex-suite-default.${extension}`));
+				assert.equal(isSupportedDocument(document), true, extension);
+			}
+			const document = await vscode.workspace.openTextDocument(vscode.Uri.parse("untitled:/latex-suite-custom.rmd"));
+			await vscode.languages.setTextDocumentLanguage(document, "markdown");
+			const editor = await vscode.window.showTextDocument(document);
+			assert.equal(isSupportedDocument(document), false, "language alone must not enable a named file");
+			await typeCharacters("dm");
+			assert.equal(document.getText(), "dm");
+			await editor.edit(builder => builder.delete(new vscode.Range(document.positionAt(0), document.positionAt(2))));
+			await vscode.languages.setTextDocumentLanguage(document, "plaintext");
+			await setExtensionSetting("fileExtensions", ["RMD"]);
+			assert.equal(isSupportedDocument(document), true);
+			await typeCharacters("dm");
+			await waitFor(() => normalizeEol(document.getText()) === "$$\n\n$$");
+			await setExtensionSetting("fileExtensions", []);
+			assert.equal(isSupportedDocument(document), false);
+			assert.equal(await vscode.commands.executeCommand("latexSuite.matrixCell"), false);
+			const untitled = await vscode.workspace.openTextDocument({ language: "markdown" });
+			assert.equal(isSupportedDocument(untitled), false);
+		} finally {
+			await setExtensionSetting("fileExtensions", previous);
+		}
 	});
 
 	test("automatically expands an upstream text-mode snippet in Markdown", async () => {

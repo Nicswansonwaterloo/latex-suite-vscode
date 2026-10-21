@@ -70,10 +70,11 @@ interface EditOptions {
 
 const EXTENSION_ID = "qmvis.latex-suite-vscode";
 
-export function activate(extensionContext: vscode.ExtensionContext): void {
+export function activate(extensionContext: vscode.ExtensionContext): vscode.Disposable {
 	const output = vscode.window.createOutputChannel("LaTeX Suite", { log: true });
 	const controller = new LatexSuiteController(output);
 	extensionContext.subscriptions.push(output, controller);
+	return controller;
 }
 
 export function deactivate(): void {
@@ -133,6 +134,14 @@ export class LatexSuiteController implements vscode.Disposable {
 			vscode.workspace.onDidChangeConfiguration((event) => {
 				if (event.affectsConfiguration("latexSuite")) {
 					this.configurationGeneration += 1;
+					this.documentSnapshots.clear();
+					this.editorSelections.clear();
+					for (const document of vscode.workspace.textDocuments) {
+						this.rememberDocument(document);
+					}
+					if (vscode.window.activeTextEditor) {
+						this.rememberEditorSelection(vscode.window.activeTextEditor);
+					}
 					void this.refreshContextKeys();
 				}
 			}),
@@ -1339,7 +1348,7 @@ export class LatexSuiteController implements vscode.Disposable {
 			return this.lastScan.context.at(offset);
 		}
 		const context = parseContext(source, {
-			language: document.languageId === "latex" ? "latex" : "markdown",
+			language: document.languageId === "latex" || /\.tex$/i.test(document.uri.path) ? "latex" : "markdown",
 			mathFenceLanguages: config.forceMathLanguages,
 		});
 		this.lastScan = {
@@ -1581,6 +1590,10 @@ export class LatexSuiteController implements vscode.Disposable {
 				inMatrix = config.matrixShortcuts.enabled && getMatrixScope(context, config.matrixShortcuts) !== null;
 			}
 		}
+		await vscode.commands.executeCommand(
+			"setContext", "latexSuite.supportedDocument",
+			Boolean(!this.disposed && editor && isSupportedDocument(editor.document)),
+		);
 		await vscode.commands.executeCommand("setContext", "latexSuite.inMatrix", inMatrix);
 	}
 

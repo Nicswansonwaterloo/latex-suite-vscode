@@ -2,7 +2,7 @@
   "name": "latex-suite-vscode",
   "displayName": "LaTeX Suite for VSCode",
   "description": "Fast LaTeX math typing in Markdown and LaTeX: auto-expanding snippets, auto-fractions, matrix shortcuts, and Tab navigation. A port of Obsidian LaTeX Suite.",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "publisher": "qmvis",
   "license": "MIT",
   "icon": "assets/icon.png",
@@ -34,8 +34,7 @@
     "obsidian"
   ],
   "activationEvents": [
-    "onLanguage:markdown",
-    "onLanguage:latex"
+    "onStartupFinished"
   ],
   "main": "./dist/extension.js",
   "capabilities": {
@@ -134,17 +133,17 @@
       {
         "command": "latexSuite.tab",
         "key": "tab",
-        "when": "editorTextFocus && !editorReadonly && !editorHasSelection && !editorHasMultipleSelections && !inSnippetMode && !suggestWidgetVisible && !inlineSuggestionVisible && !inlineEditIsVisible && !renameInputVisible && !editorTabMovesFocus && config.editor.tabCompletion == off && config.latexSuite.enabled && (editorLangId == markdown || editorLangId == latex)"
+        "when": "editorTextFocus && !editorReadonly && !editorHasSelection && !editorHasMultipleSelections && !inSnippetMode && !suggestWidgetVisible && !inlineSuggestionVisible && !inlineEditIsVisible && !renameInputVisible && !editorTabMovesFocus && config.editor.tabCompletion == off && config.latexSuite.enabled && latexSuite.supportedDocument"
       },
       {
         "command": "latexSuite.internal.matrixNewline",
         "key": "enter",
-        "when": "editorTextFocus && !editorReadonly && !editorHasSelection && !editorHasMultipleSelections && !suggestWidgetVisible && !inlineSuggestionVisible && !inlineEditIsVisible && !renameInputVisible && latexSuite.inMatrix && config.latexSuite.enabled && config.latexSuite.matrixShortcuts.enabled && (editorLangId == markdown || editorLangId == latex)"
+        "when": "editorTextFocus && !editorReadonly && !editorHasSelection && !editorHasMultipleSelections && !suggestWidgetVisible && !inlineSuggestionVisible && !inlineEditIsVisible && !renameInputVisible && latexSuite.inMatrix && config.latexSuite.enabled && config.latexSuite.matrixShortcuts.enabled && latexSuite.supportedDocument"
       },
       {
         "command": "latexSuite.internal.matrixExit",
         "key": "shift+enter",
-        "when": "editorTextFocus && !editorReadonly && !editorHasSelection && !editorHasMultipleSelections && !suggestWidgetVisible && !inlineSuggestionVisible && !inlineEditIsVisible && !renameInputVisible && latexSuite.inMatrix && config.latexSuite.enabled && config.latexSuite.matrixShortcuts.enabled && (editorLangId == markdown || editorLangId == latex)"
+        "when": "editorTextFocus && !editorReadonly && !editorHasSelection && !editorHasMultipleSelections && !suggestWidgetVisible && !inlineSuggestionVisible && !inlineEditIsVisible && !renameInputVisible && latexSuite.inMatrix && config.latexSuite.enabled && config.latexSuite.matrixShortcuts.enabled && latexSuite.supportedDocument"
       }
     ],
     "configuration": {
@@ -155,7 +154,7 @@
           "default": true,
           "scope": "resource",
           "order": 1,
-          "markdownDescription": "Enable LaTeX Suite typing shortcuts in Markdown and LaTeX files."
+          "markdownDescription": "Enable LaTeX Suite typing shortcuts in configured file types."
         },
         "latexSuite.snippets.enabled": {
           "type": "boolean",
@@ -411,6 +410,22 @@
             "Log each snippet expansion.",
             "Log each expansion with its math mode and enclosing scopes."
           ]
+        },
+        "latexSuite.fileExtensions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^\\.?[^./\\\\\\s]+$"
+          },
+          "uniqueItems": true,
+          "default": [
+            ".tex",
+            ".md",
+            ".qmd"
+          ],
+          "scope": "resource",
+          "order": 2,
+          "markdownDescription": "File extensions where LaTeX Suite typing shortcuts are active. Entries may include the leading dot and are matched without regard to case. Changes take effect immediately. Use an empty list to disable all file types. Untitled Markdown and LaTeX documents follow the `.md` and `.tex` entries."
         }
       }
     }

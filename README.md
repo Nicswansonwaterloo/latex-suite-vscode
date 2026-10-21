@@ -1,6 +1,6 @@
 # LaTeX Suite
 
-Type LaTeX math quickly in Markdown and LaTeX files. LaTeX Suite expands short
+Type LaTeX math quickly in Markdown, LaTeX, and Quarto files. LaTeX Suite expands short
 triggers into LaTeX as you type, turns `/` into fractions, and lets you `Tab`
 through brackets and out of equations.
 
@@ -265,9 +265,17 @@ Run **LaTeX Suite: Open Settings** to see every setting with its description.
 Settings can be set for the user, a workspace, or a single folder in a
 multi-root workspace.
 
+Edit **LaTeX Suite: File Extensions** to choose which file types activate the
+extension, for example `[".tex", ".md", ".qmd", ".rmd"]`. Extensions are
+case-insensitive and may omit the leading dot. An empty list disables all file
+types. Untitled Markdown and LaTeX documents follow the `.md` and `.tex` entries.
+LaTeX files use LaTeX context detection; other configured types use Markdown
+context detection.
+
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `latexSuite.enabled` | `true` | Turn all shortcuts on or off |
+| `latexSuite.fileExtensions` | `[".tex", ".md", ".qmd"]` | File types where shortcuts are active; changes apply immediately |
 | `latexSuite.snippets.enabled` | `true` | Snippet expansion |
 | `latexSuite.snippets.files` | `[]` | Your snippet files or folders |
 | `latexSuite.snippets.source` | `""` | Inline snippets |
