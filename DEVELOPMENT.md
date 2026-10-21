@@ -62,8 +62,12 @@ custom snippets can add typing latency.
 
 ## Releasing
 
+Publication is manual. Tag pushes run release validation and the full CI matrix;
+GitHub Actions never authenticates to or publishes to Marketplace.
+
 1. Bump `version` in `package.json` (`npm version <x.y.z> --no-git-tag-version`).
-2. Make sure CI is green on the exact commit being released.
+2. Make sure CI is green on the exact commit being released. Validate the planned
+   tag with `RELEASE_TAG=v<x.y.z> node scripts/check-release.js`.
 3. Run the checks above, ending with `package:vsix`, `check:package`,
    `test:vsix`, and `test:trust`.
 4. Do these manual checks, which automated tests cannot cover:

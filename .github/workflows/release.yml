@@ -1,0 +1,28 @@
+name: Release validation
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.repository == 'Nicswansonwaterloo/latex-suite-vscode'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+      - name: Require a versioned release from main
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node scripts/check-release.js
+          git merge-base --is-ancestor HEAD origin/main
