@@ -21,7 +21,8 @@ suite("multi-root snippet loading", () => {
 		const oldWatches = new Set<vscode.FileSystemWatcher>();
 		let watchingNew = false;
 		try {
-			await configuration.update(setting, [oldName], vscode.ConfigurationTarget.WorkspaceFolder);
+			// Use a virtual source to exercise native watchers on every OS.
+			await configuration.update(setting, [`watch-settings:/${oldName}`], vscode.ConfigurationTarget.WorkspaceFolder);
 			vscode.workspace.createFileSystemWatcher = (...args) => {
 				const watcher = createWatcher(...args);
 				const [pattern] = args;
@@ -35,7 +36,7 @@ suite("multi-root snippet loading", () => {
 			};
 			const old = await repository.get(resource, getConfig(resource));
 			assert.ok(oldWatches.size > 0);
-			await configuration.update(setting, [newName], vscode.ConfigurationTarget.WorkspaceFolder);
+			await configuration.update(setting, [`watch-settings:/${newName}`], vscode.ConfigurationTarget.WorkspaceFolder);
 			assert.equal(repository.isCurrent(old), false);
 			assert.equal(oldWatches.size, 0);
 			assert.ok(watchingNew);

@@ -24,25 +24,18 @@ suite("controller lifecycle", () => {
 
 	test("cursor movement reuses bracket pairs and changing each setting clears its decorations", async () => {
 		const document = await vscode.workspace.openTextDocument({ language: "markdown", content: "$ ( ab ) $" });
+		const editor = await vscode.window.showTextDocument(document);
+		editor.selection = new vscode.Selection(0, 5, 0, 5);
 		const settings = vscode.workspace.getConfiguration("latexSuite", document);
 		const keys = ["highlighting.bracketPairs", "highlighting.matchingBracket", "highlighting.mathDelimiters"];
 		const previous = keys.map(key => settings.inspect<boolean>(key)?.globalValue);
-		const selectionEvent = new vscode.EventEmitter<vscode.TextEditorSelectionChangeEvent>();
-		const visible = Object.getOwnPropertyDescriptor(vscode.window, "visibleTextEditors")!;
-		const onSelection = Object.getOwnPropertyDescriptor(vscode.window, "onDidChangeTextEditorSelection")!;
 		const painted = new Map<string, string>();
-		// VS Code exposes no decoration getter. Record the ranges sent to the editor
-		// while using its real document, settings events, ranges and decoration types.
-		const editor = {
-			document,
-			selections: [new vscode.Selection(0, 5, 0, 5)],
-			visibleRanges: [new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length))],
-			setDecorations(style: vscode.TextEditorDecorationType, ranges: vscode.Range[]) {
-				painted.set(style.key, ranges.map(r => document.getText(r)).join(""));
-			},
-		} as unknown as vscode.TextEditor;
+		// Observe a real editor: mocking only visibleTextEditors leaves the native
+		// visibility events able to remove the fake editor during host startup.
 		let registrations: vscode.Disposable | undefined;
-		let parses = 0;
+		const parsed = parseContext(document.getText());
+		let bracketVisits = 0;
+		const tracked = { ...parsed, isIgnored: (offset: number) => { bracketVisits++; return parsed.isIgnored(offset); } };
 		const colors = () => [...painted.values()].filter(Boolean).sort();
 		async function expectColors(expected: string[]) {
 			const deadline = Date.now() + 2000;
@@ -53,15 +46,16 @@ suite("controller lifecycle", () => {
 		}
 		try {
 			for (const key of keys) { await settings.update(key, true, vscode.ConfigurationTarget.Global); }
-			Object.defineProperty(vscode.window, "visibleTextEditors", { configurable: true, get: () => [editor] });
-			Object.defineProperty(vscode.window, "onDidChangeTextEditorSelection", { ...onSelection, value: selectionEvent.event });
-			registrations = registerMathHighlights(source => { parses++; return parseContext(source); });
+			registrations = registerMathHighlights(() => tracked, (target, style, ranges) => {
+				if (target === editor) { painted.set(style.key, ranges.map(r => document.getText(r)).join("")); }
+				target.setDecorations(style, ranges);
+			});
 			await expectColors(["$$", "()"]);
-			const initialParses = parses;
-			editor.selections = [new vscode.Selection(0, 2, 0, 2)];
-			selectionEvent.fire({ textEditor: editor, selections: editor.selections, kind: vscode.TextEditorSelectionChangeKind.Keyboard });
+			const initialVisits = bracketVisits;
+			assert.ok(initialVisits > 0);
+			editor.selection = new vscode.Selection(0, 2, 0, 2);
 			await expectColors(["$$", "()", "()"]);
-			assert.equal(parses, initialParses);
+			assert.equal(bracketVisits, initialVisits, "cursor movement reuses the bracket scan");
 
 			await settings.update(keys[0], false, vscode.ConfigurationTarget.Global);
 			await expectColors(["$$", "()"]);
@@ -71,10 +65,8 @@ suite("controller lifecycle", () => {
 			await expectColors([]);
 		} finally {
 			registrations?.dispose();
-			Object.defineProperty(vscode.window, "visibleTextEditors", visible);
-			Object.defineProperty(vscode.window, "onDidChangeTextEditorSelection", onSelection);
-			selectionEvent.dispose();
 			for (const [index, key] of keys.entries()) { await settings.update(key, previous[index], vscode.ConfigurationTarget.Global); }
+			await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
 		}
 	});
 

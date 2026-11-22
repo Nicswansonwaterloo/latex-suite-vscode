@@ -86,6 +86,8 @@ Things to know:
   snippet or variable file updates the snippets for folders that use it.
   Watching begins when a collection is first used. VS Code can skip events
   for excluded subfolders or edits made directly to a symbolic link’s target.
+  Local Windows sources are checked about once a second so they can still be
+  moved or renamed while automatic reload is active.
   **LaTeX Suite: Reload Snippets** forces a refresh in those cases.
 - Errors are shown in the **LaTeX Suite** output channel. If a custom source
   fails to load, the bundled snippets are not used in its place.

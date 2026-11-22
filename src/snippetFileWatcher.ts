@@ -4,6 +4,8 @@ import * as vscode from "vscode";
 /** Watch the configured entries themselves, including missing files and atomic replacements.
  * Only directories discovered by the loader need a recursive watcher. */
 export class SnippetFileWatcher implements vscode.Disposable {
+	readonly ready: Promise<void>;
+	private readonly pollers: PollingSourceWatcher[] = [];
 	private readonly targets = new Map<string, {
 		entry?: vscode.FileSystemWatcher;
 		children?: vscode.FileSystemWatcher;
@@ -13,6 +15,16 @@ export class SnippetFileWatcher implements vscode.Disposable {
 	constructor(uris: readonly vscode.Uri[], private readonly reload: () => void) {
 		const sources = new Set(uris.map(uri => uri.toString()));
 		for (const source of uris) {
+			if (process.platform === "win32" && source.scheme === "file") {
+				// Native RelativePattern watchers can lock an ancestor against rename
+				// on Windows: https://github.com/microsoft/vscode/issues/334673.
+				// Metadata polling holds no directory handle, including for missing paths.
+				if (!this.targets.has(source.toString())) {
+					this.targets.set(source.toString(), {});
+					this.pollers.push(new PollingSourceWatcher(source, () => this.changed()));
+				}
+				continue;
+			}
 			const workspaceRoot = vscode.workspace.getWorkspaceFolder(source)?.uri.toString();
 			let uri = source;
 			while (!this.targets.has(uri.toString())) {
@@ -33,9 +45,11 @@ export class SnippetFileWatcher implements vscode.Disposable {
 				uri = parent;
 			}
 		}
+		this.ready = Promise.all(this.pollers.map(poller => poller.ready)).then(() => {});
 	}
 
 	setDirectory(uri: vscode.Uri, directory: boolean): void {
+		if (process.platform === "win32" && uri.scheme === "file") { return; }
 		const target = this.targets.get(uri.toString());
 		if (!target) {
 			return;
@@ -55,11 +69,7 @@ export class SnippetFileWatcher implements vscode.Disposable {
 			if (uri.scheme !== pattern.baseUri.scheme || uri.authority !== pattern.baseUri.authority) {
 				return;
 			}
-			clearTimeout(this.timer);
-			this.timer = setTimeout(() => {
-				this.timer = undefined;
-				this.reload();
-			}, 150);
+			this.changed();
 		};
 		if (!ignoreChanges) {
 			watcher.onDidChange(changed);
@@ -69,12 +79,67 @@ export class SnippetFileWatcher implements vscode.Disposable {
 		return watcher;
 	}
 
+	private changed(): void {
+		clearTimeout(this.timer);
+		this.timer = setTimeout(() => {
+			this.timer = undefined;
+			this.reload();
+		}, 150);
+	}
+
 	dispose(): void {
 		clearTimeout(this.timer);
+		for (const poller of this.pollers) { poller.dispose(); }
 		for (const target of this.targets.values()) {
 			target.entry?.dispose();
 			target.children?.dispose();
 		}
 		this.targets.clear();
+	}
+}
+
+/** Windows local sources must remain renamable while automatic reload is active. */
+export class PollingSourceWatcher implements vscode.Disposable {
+	readonly ready: Promise<void>;
+	private timer?: NodeJS.Timeout;
+	private disposed = false;
+	private previous?: string;
+
+	constructor(private readonly uri: vscode.Uri, private readonly changed: () => void) {
+		this.ready = this.poll();
+	}
+
+	private async snapshot(uri: vscode.Uri): Promise<unknown[]> {
+		if (this.disposed) { return []; }
+		try {
+			const stat = await vscode.workspace.fs.stat(uri);
+			const state: unknown[] = [uri.toString(), stat.type, stat.ctime, stat.mtime, stat.size];
+			if (stat.type & vscode.FileType.Directory) {
+				const entries = await vscode.workspace.fs.readDirectory(uri);
+				for (const [name, type] of entries.sort(([left], [right]) => left.localeCompare(right))) {
+					// Match the loader's traversal; do not follow directory symlink cycles.
+					if (type & (vscode.FileType.Directory | vscode.FileType.File)) {
+						state.push(await this.snapshot(vscode.Uri.joinPath(uri, name)));
+					}
+				}
+			}
+			return state;
+		} catch (error) {
+			return [uri.toString(), error instanceof Error ? error.message : String(error)];
+		}
+	}
+
+	private async poll(): Promise<void> {
+		const current = JSON.stringify(await this.snapshot(this.uri));
+		if (this.disposed) { return; }
+		if (this.previous !== undefined && current !== this.previous) { this.changed(); }
+		this.previous = current;
+		// Schedule after the scan so slow or remote files never overlap polls.
+		this.timer = setTimeout(() => { void this.poll(); }, 1000);
+	}
+
+	dispose(): void {
+		this.disposed = true;
+		clearTimeout(this.timer);
 	}
 }

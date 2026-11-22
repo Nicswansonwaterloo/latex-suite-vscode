@@ -5,6 +5,8 @@ import { MathHighlightIndex, matchingBrackets } from "../core/highlights";
 
 export function registerMathHighlights(
 	parse: (source: string, document: vscode.TextDocument, config: LatexSuiteConfig) => ParsedContext,
+	decorate: (editor: vscode.TextEditor, style: vscode.TextEditorDecorationType, ranges: vscode.Range[]) => void =
+		(editor, style, ranges) => editor.setDecorations(style, ranges),
 ): vscode.Disposable {
 	const foreground = (id: string) => vscode.window.createTextEditorDecorationType({
 		color: new vscode.ThemeColor(id),
@@ -39,10 +41,10 @@ export function registerMathHighlights(
 
 	function apply(editor: vscode.TextEditor, state: EditorState, style: vscode.TextEditorDecorationType, ranges: vscode.Range[]) {
 		if (ranges.length) {
-			editor.setDecorations(style, ranges);
+			decorate(editor, style, ranges);
 			state.applied.add(style);
 		} else if (state.applied.delete(style)) {
-			editor.setDecorations(style, []);
+			decorate(editor, style, []);
 		}
 	}
 

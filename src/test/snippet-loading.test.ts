@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import * as vscode from "vscode";
 import { getConfig, type LatexSuiteConfig } from "../config";
 import { SnippetRepository } from "../snippetRepository";
-import { SnippetFileWatcher } from "../snippetFileWatcher";
+import { PollingSourceWatcher, SnippetFileWatcher } from "../snippetFileWatcher";
 import { matchFirstSnippet } from "../core/snippets";
 
 suite("snippet collection selection", () => {
@@ -134,7 +134,7 @@ suite("snippet collection selection", () => {
 		let watchedForChanges = 0;
 		let disposed = 0;
 		let reloaded = 0;
-		const uri = vscode.Uri.file(directory);
+		const uri = vscode.Uri.parse("source-watch:/parent/sources");
 		let watcher: SnippetFileWatcher | undefined;
 		try {
 			vscode.workspace.createFileSystemWatcher = (_pattern, _ignoreCreate, ignoreChanges) => {
@@ -166,6 +166,40 @@ suite("snippet collection selection", () => {
 			vscode.workspace.createFileSystemWatcher = createWatcher;
 			watcher?.dispose();
 			for (const event of Object.values(events)) { event.dispose(); }
+		}
+	});
+
+	test("polling detects nested changes and missing directories without holding rename locks", async function () {
+		this.timeout(15_000);
+		const root = path.join(directory, "polled");
+		const moved = path.join(directory, "moved");
+		const nested = path.join(root, "nested");
+		let changes = 0;
+		const watcher = new PollingSourceWatcher(vscode.Uri.file(root), () => { changes++; });
+		async function changed(action: () => Promise<unknown>) {
+			const previous = changes;
+			await action();
+			const deadline = Date.now() + 3000;
+			while (changes === previous && Date.now() < deadline) { await delay(20); }
+			assert.ok(changes > previous, "source metadata change was detected");
+		}
+		try {
+			await watcher.ready;
+			await changed(async () => {
+				await mkdir(nested, { recursive: true });
+				await writeFile(path.join(nested, "source.js"), custom);
+			});
+			await changed(() => writeFile(path.join(nested, "source.js"), custom + "\n// edited"));
+			await changed(() => rename(root, moved));
+			await changed(() => rename(moved, root));
+			await changed(() => rm(path.join(nested, "source.js")));
+			watcher.dispose();
+			const stopped = changes;
+			await writeFile(path.join(nested, "new.js"), custom);
+			await delay(1100);
+			assert.equal(changes, stopped, "disposal stops polling");
+		} finally {
+			watcher.dispose();
 		}
 	});
 
@@ -244,7 +278,7 @@ suite("snippet collection selection", () => {
 		const oldFiles = settings.inspect<string[]>("snippets.files")?.globalValue;
 		let watches = 0;
 		try {
-			const files = [path.join(directory, "missing.js")];
+			const files = ["trust-test:/missing.js"];
 			await settings.update("snippets.files", files, vscode.ConfigurationTarget.Global);
 			repository.dispose();
 			Object.defineProperty(vscode.workspace, "isTrusted", { configurable: true, get: () => false });

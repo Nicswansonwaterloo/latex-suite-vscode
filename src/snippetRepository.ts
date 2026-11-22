@@ -89,10 +89,17 @@ export class SnippetRepository implements vscode.Disposable {
 		];
 	}
 
-	get(resource: Resource, config: LatexSuiteConfig): Promise<SnippetBundle> {
+	async get(resource: Resource, config: LatexSuiteConfig): Promise<SnippetBundle> {
 		const collection = this.getCollection(resource, config);
-		collection.pending ??= this.load(collection, collection.generation);
-		return collection.pending;
+		for (;;) {
+			const pending = collection.pending ??= this.load(collection, collection.generation);
+			const bundle = await pending;
+			// A file event can replace an in-flight read. Follow the new load instead
+			// of dropping the user's expansion, but never cross a settings/trust reset.
+			if (collection.pending === pending || this.collections.get(collectionKey(resource)) !== collection) {
+				return bundle;
+			}
+		}
 	}
 
 	private getCollection(resource: Resource, config: LatexSuiteConfig): Collection {
@@ -166,6 +173,8 @@ export class SnippetRepository implements vscode.Disposable {
 		collection: Collection,
 		generation: SnippetBundle["generation"],
 	): Promise<SnippetBundle> {
+		await collection.watcher?.ready;
+		if (!generation.current) { return staleBundle(generation); }
 		const { config } = collection;
 		const errors: string[] = [];
 		const loadCustom = vscode.workspace.isTrusted;

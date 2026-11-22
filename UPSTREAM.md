@@ -30,6 +30,9 @@ snippet reload is upstream 1.14.5. [Pinned source at `95b654a`](https://github.c
   nested directories. A burst of changes refreshes only the workspace
   folders that use those paths. Watches start on first use, and the manual
   Reload Snippets command remains available when a provider skips events.
+  Windows local sources use metadata polling to avoid VS Code file watchers
+  locking parent directories against rename. Pending expansions follow a
+  replacement file load while retaining the editor and configuration guards.
 
 Earlier upstream changes reviewed through 1.13.3 include the following.
 
