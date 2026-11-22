@@ -1,5 +1,8 @@
 import * as assert from "node:assert/strict";
 import * as vscode from "vscode";
+import { setTimeout as delay } from "node:timers/promises";
+import { parseContext } from "../core/context";
+import { registerMathHighlights } from "../editor/highlights";
 import { LatexSuiteController } from "../extension";
 
 // This suite runs in its own host and disposes the startup controller before
@@ -18,6 +21,62 @@ suite("controller lifecycle", () => {
 		output = vscode.window.createOutputChannel("Lifecycle tests", { log: true });
 	});
 	suiteTeardown(() => output.dispose());
+
+	test("cursor movement reuses bracket pairs and changing each setting clears its decorations", async () => {
+		const document = await vscode.workspace.openTextDocument({ language: "markdown", content: "$ ( ab ) $" });
+		const settings = vscode.workspace.getConfiguration("latexSuite", document);
+		const keys = ["highlighting.bracketPairs", "highlighting.matchingBracket", "highlighting.mathDelimiters"];
+		const previous = keys.map(key => settings.inspect<boolean>(key)?.globalValue);
+		const selectionEvent = new vscode.EventEmitter<vscode.TextEditorSelectionChangeEvent>();
+		const visible = Object.getOwnPropertyDescriptor(vscode.window, "visibleTextEditors")!;
+		const onSelection = Object.getOwnPropertyDescriptor(vscode.window, "onDidChangeTextEditorSelection")!;
+		const painted = new Map<string, string>();
+		// VS Code exposes no decoration getter. Record the ranges sent to the editor
+		// while using its real document, settings events, ranges and decoration types.
+		const editor = {
+			document,
+			selections: [new vscode.Selection(0, 5, 0, 5)],
+			visibleRanges: [new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length))],
+			setDecorations(style: vscode.TextEditorDecorationType, ranges: vscode.Range[]) {
+				painted.set(style.key, ranges.map(r => document.getText(r)).join(""));
+			},
+		} as unknown as vscode.TextEditor;
+		let registrations: vscode.Disposable | undefined;
+		let parses = 0;
+		const colors = () => [...painted.values()].filter(Boolean).sort();
+		async function expectColors(expected: string[]) {
+			const deadline = Date.now() + 2000;
+			while (colors().join(",") !== expected.join(",") && Date.now() < deadline) {
+				await delay(20);
+			}
+			assert.deepEqual(colors(), expected);
+		}
+		try {
+			for (const key of keys) { await settings.update(key, true, vscode.ConfigurationTarget.Global); }
+			Object.defineProperty(vscode.window, "visibleTextEditors", { configurable: true, get: () => [editor] });
+			Object.defineProperty(vscode.window, "onDidChangeTextEditorSelection", { ...onSelection, value: selectionEvent.event });
+			registrations = registerMathHighlights(source => { parses++; return parseContext(source); });
+			await expectColors(["$$", "()"]);
+			const initialParses = parses;
+			editor.selections = [new vscode.Selection(0, 2, 0, 2)];
+			selectionEvent.fire({ textEditor: editor, selections: editor.selections, kind: vscode.TextEditorSelectionChangeKind.Keyboard });
+			await expectColors(["$$", "()", "()"]);
+			assert.equal(parses, initialParses);
+
+			await settings.update(keys[0], false, vscode.ConfigurationTarget.Global);
+			await expectColors(["$$", "()"]);
+			await settings.update(keys[2], false, vscode.ConfigurationTarget.Global);
+			await expectColors(["()"]);
+			await settings.update(keys[1], false, vscode.ConfigurationTarget.Global);
+			await expectColors([]);
+		} finally {
+			registrations?.dispose();
+			Object.defineProperty(vscode.window, "visibleTextEditors", visible);
+			Object.defineProperty(vscode.window, "onDidChangeTextEditorSelection", onSelection);
+			selectionEvent.dispose();
+			for (const [index, key] of keys.entries()) { await settings.update(key, previous[index], vscode.ConfigurationTarget.Global); }
+		}
+	});
 
 	test("real disposal unregisters commands, cancels pending waits, and invalidates operations", async () => {
 		assert.equal((await vscode.commands.getCommands(true)).includes("latexSuite.internal.waitForIdle"), false);

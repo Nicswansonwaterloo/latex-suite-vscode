@@ -30,6 +30,7 @@ suite("LaTeX Suite extension", function () {
 			command: string;
 			key: string;
 			when: string;
+			args?: unknown;
 		}>;
 		const tab = keybindings.find((binding) => binding.key === "tab");
 		assert.equal(tab?.command, "latexSuite.tab");
@@ -37,6 +38,12 @@ suite("LaTeX Suite extension", function () {
 		assert.ok(tab?.when.includes("config.editor.tabCompletion == off"));
 		assert.ok(tab?.when.includes("!inlineEditIsVisible"));
 		assert.equal(tab?.when.includes("latexSuite.canHandleTab"), false);
+		const reverse = keybindings.find((binding) => binding.key === "shift+tab");
+		assert.equal(reverse?.command, "latexSuite.previousBracketOrEquation");
+		assert.equal(reverse?.args, "outdent");
+		for (const guard of ["!inSnippetMode", "!editorHasSelection", "!editorHasMultipleSelections", "!editorTabMovesFocus", "config.latexSuite.tabOut.enabled", "latexSuite.inMath"]) {
+			assert.ok(reverse?.when.includes(guard), guard);
+		}
 		assert.equal(
 			keybindings.find((binding) => binding.key === "enter")?.command,
 			"latexSuite.internal.matrixNewline",
@@ -132,6 +139,9 @@ suite("LaTeX Suite extension", function () {
 
 		await vscode.commands.executeCommand("jumpToNextSnippetPlaceholder");
 		assert.equal(editor.document.getText(editor.selection), "x");
+		await vscode.commands.executeCommand("jumpToPrevSnippetPlaceholder");
+		assert.equal(editor.document.getText(editor.selection), "y");
+		await vscode.commands.executeCommand("jumpToNextSnippetPlaceholder");
 		await vscode.commands.executeCommand("jumpToNextSnippetPlaceholder");
 		await vscode.commands.executeCommand("latexSuite.tab");
 		assert.equal(editor.document.offsetAt(editor.selection.active), editor.document.getText().length);
@@ -173,6 +183,47 @@ suite("LaTeX Suite extension", function () {
 		);
 		assert.equal(editor.document.getText(), "  $$\n  x\n  $$\n  ");
 		assert.deepEqual(editor.selection.active, new vscode.Position(3, 2));
+	});
+
+	test("reverse tab-out steps before each opener, then before the equation without editing it", async () => {
+		const source = "before $$\n  \\left( [x] \\right)\n$$";
+		const editor = await openEditor("markdown", source, source.lastIndexOf("$$"));
+		for (const expected of [source.indexOf("["), source.indexOf("\\left"), source.indexOf("$$")]) {
+			assert.equal(await vscode.commands.executeCommand("latexSuite.previousBracketOrEquation"), true);
+			assert.equal(editor.document.offsetAt(editor.selection.active), expected);
+		}
+		assert.equal(await vscode.commands.executeCommand("latexSuite.previousBracketOrEquation"), false);
+		assert.equal(editor.document.getText(), source);
+	});
+
+	test("reverse tab-out falls back to native outdent when an equation exit is blocked", async () => {
+		const source = "    $abc$";
+		const editor = await openEditor("markdown", source, source.lastIndexOf("$"));
+		editor.options = { tabSize: 4, insertSpaces: true };
+		assert.equal(await vscode.commands.executeCommand("latexSuite.previousBracketOrEquation"), false);
+		assert.equal(editor.document.getText(), source);
+		await vscode.commands.executeCommand("latexSuite.previousBracketOrEquation", "outdent");
+		assert.equal(editor.document.getText(), "$abc$");
+
+		const previous = vscode.workspace.getConfiguration("latexSuite").inspect<boolean>("tabOut.exitEquationOnlyAtEndOfLine")?.globalValue;
+		try {
+			await setExtensionSetting("tabOut.exitEquationOnlyAtEndOfLine", false);
+			assert.equal(await vscode.commands.executeCommand("latexSuite.previousBracketOrEquation"), true);
+			assert.equal(editor.document.offsetAt(editor.selection.active), 0);
+		} finally {
+			await setExtensionSetting("tabOut.exitEquationOnlyAtEndOfLine", previous);
+		}
+	});
+
+	test("reverse tab-out ignores code and TeX comments even when they contain opening brackets", async () => {
+		const source = "`$(code)$`\n$$x % (comment\n$$";
+		const editor = await openEditor("markdown", source, 0);
+		for (const marker of ["code", "comment"]) {
+			const position = editor.document.positionAt(source.indexOf(marker) + marker.length);
+			editor.selection = new vscode.Selection(position, position);
+			assert.equal(await vscode.commands.executeCommand("latexSuite.previousBracketOrEquation"), false);
+			assert.deepEqual(editor.selection.active, position);
+		}
 	});
 
 	test("multiline equation tab-out appends an indented CRLF line at EOF", async () => {

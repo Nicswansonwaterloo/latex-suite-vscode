@@ -41,12 +41,17 @@ export interface LatexSuiteConfig {
 		triggers: string[];
 		insertSpaces: boolean;
 	};
+	highlighting: {
+		bracketPairs: boolean;
+		matchingBracket: boolean;
+		mathDelimiters: boolean;
+	};
 	debug: DebugLevel;
 }
 
 const DEFAULT_WORD_DELIMITERS = "., +-\n\t:;!?\\/{}[]()=~$'\"|`<>*^%#@&";
 
-export function getConfig(document: vscode.TextDocument): LatexSuiteConfig {
+export function getConfig(document: Pick<vscode.TextDocument, "uri" | "languageId">): LatexSuiteConfig {
 	const config = vscode.workspace.getConfiguration("latexSuite", document);
 	return {
 		enabled: config.get("enabled", true),
@@ -92,6 +97,11 @@ export function getConfig(document: vscode.TextDocument): LatexSuiteConfig {
 			insertSpaces: config.get("bracketEnlargement.insertSpaces", true),
 		},
 		debug: config.get<DebugLevel>("debug", "off"),
+		highlighting: {
+			bracketPairs: config.get("highlighting.bracketPairs", true),
+			matchingBracket: config.get("highlighting.matchingBracket", true),
+			mathDelimiters: config.get("highlighting.mathDelimiters", true),
+		},
 	};
 }
 

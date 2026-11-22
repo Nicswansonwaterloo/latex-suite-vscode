@@ -22,8 +22,10 @@ Open a Markdown file and type:
 | `sin @t` (in math) | `\sin \theta` |
 | `x/y` then `Tab` (in math) | `\frac{x}{y}` |
 
-Press `Tab` to move to the next placeholder, past a closing bracket, or out of
-the equation.
+Press `Tab` to move forward through placeholders and brackets. Press
+`Shift+Tab` to move back. For example, in `$(x[y])$`, put the cursor just
+after `y` and press `Shift+Tab` three times. The cursor moves before `[`,
+then before `(`, then before the opening `$`.
 
 ## Features
 
@@ -35,8 +37,11 @@ the equation.
 - **Matrix shortcuts**: inside `pmatrix`, `align`, `cases`, and similar
   environments, `Tab` adds ` & `, `Enter` starts a new row, and `Shift+Enter`
   leaves the environment.
-- **Tab-out**: `Tab` jumps through snippet placeholders, then past closing
-  brackets, then out of the equation.
+- **Tab-out** moves past closing brackets with `Tab` and back before opening
+  brackets with `Shift+Tab`. Both directions can leave the equation.
+- **Math highlighting** colors bracket pairs by nesting depth, highlights both
+  ends of a pair beside the cursor, and distinguishes matched math delimiters
+  from unmatched ones. Each feature has its own setting.
 - **Bracket enlargement**: when a snippet inserts something large like `\sum`
   or `\frac` inside brackets, they become `\left( … \right)`.
 
@@ -77,7 +82,11 @@ Things to know:
   folder path loads every file inside it, including subfolders, in path order.
 - Snippets can also be written inline in `latexSuite.snippets.source`. Set it to
   `[]` to turn off all snippets.
-- Files are not watched. After editing one, run **LaTeX Suite: Reload Snippets**.
+- In a trusted workspace, saving, creating, renaming, or deleting a configured
+  snippet or variable file updates the snippets for folders that use it.
+  Watching begins when a collection is first used. VS Code can skip events
+  for excluded subfolders or edits made directly to a symbolic link’s target.
+  **LaTeX Suite: Reload Snippets** forces a refresh in those cases.
 - Errors are shown in the **LaTeX Suite** output channel. If a custom source
   fails to load, the bundled snippets are not used in its place.
 
@@ -226,6 +235,7 @@ All commands are in the Command Palette under **LaTeX Suite**.
 | Expand Snippet by Trigger Key | — |
 | Insert Auto-fraction | — (`/` works automatically in math) |
 | Move to Next Bracket or Exit Equation | `Tab` |
+| Move to Previous Bracket or Exit Equation | `Shift+Tab` in math |
 | Add Matrix Cell | `Tab` in a matrix |
 | Add Matrix Row | `Enter` in a matrix |
 | Exit Matrix | `Shift+Enter` in a matrix |
@@ -242,6 +252,15 @@ closing bracket, leave the equation, or insert a normal tab.
 
 The `Tab` binding is active only when `editor.tabCompletion` is `off` (the
 default). If you use Tab Completion, bind `latexSuite.tab` to a key yourself.
+
+During a snippet, `Shift+Tab` uses VS Code’s previous-placeholder navigation.
+Otherwise, with a single cursor in math, it moves before the preceding opening
+delimiter, including the start of a command such as `\left(`. When no opening
+bracket remains, it moves before the equation opener if the text between that
+opener and the cursor is all whitespace. Disable
+`latexSuite.tabOut.exitEquationOnlyAtEndOfLine` to allow that exit from
+anywhere in the equation. When there is no applicable move, normal
+`Shift+Tab` indentation works.
 
 ### Trigger-key snippets
 
@@ -274,12 +293,12 @@ context detection.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `latexSuite.enabled` | `true` | Turn all shortcuts on or off |
+| `latexSuite.enabled` | `true` | Turn shortcuts and math highlighting on or off |
 | `latexSuite.fileExtensions` | `[".tex", ".md", ".qmd"]` | File types where shortcuts are active; changes apply immediately |
 | `latexSuite.snippets.enabled` | `true` | Snippet expansion |
 | `latexSuite.snippets.files` | `[]` | Your snippet files or folders |
 | `latexSuite.snippets.source` | `""` | Inline snippets |
-| `latexSuite.snippets.variableFiles` | `[]` | Your snippet variable files |
+| `latexSuite.snippets.variableFiles` | `[]` | Your variable files or folders |
 | `latexSuite.snippets.variablesSource` | `""` | Inline snippet variables |
 | `latexSuite.snippets.recursionLimit` | `0` | Let automatic snippets expand on each other's output (up to 10 times) |
 | `latexSuite.snippets.wordDelimiters` | punctuation and whitespace | Word boundaries for the `w` option |
@@ -292,18 +311,27 @@ context detection.
 | `latexSuite.matrixShortcuts.enabled` | `true` | Matrix `Tab`/`Enter`/`Shift+Enter` |
 | `latexSuite.matrixShortcuts.environments` | `pmatrix`, `align`, `cases`, … | Environments with matrix shortcuts |
 | `latexSuite.matrixShortcuts.macros` | `["eqalign"]` | Macros with matrix shortcuts |
-| `latexSuite.tabOut.enabled` | `true` | `Tab` past brackets and out of equations |
+| `latexSuite.tabOut.enabled` | `true` | Move through brackets and out of equations with `Tab` and `Shift+Tab` |
 | `latexSuite.tabOut.closingSymbols` | `)`, `]`, `}`, `\rangle`, … | Brackets `Tab` jumps past |
-| `latexSuite.tabOut.exitEquationOnlyAtEndOfLine` | `true` | Only leave an equation when nothing but whitespace remains in it |
+| `latexSuite.tabOut.exitEquationOnlyAtEndOfLine` | `true` | Require only whitespace to the equation end for a forward exit, or to its start for a backward exit |
 | `latexSuite.bracketEnlargement.enabled` | `true` | Add `\left`/`\right` automatically |
 | `latexSuite.bracketEnlargement.triggers` | `\sum`, `\int`, `\frac`, … | What triggers enlargement |
 | `latexSuite.bracketEnlargement.insertSpaces` | `true` | Pad enlarged brackets with spaces |
+| `latexSuite.highlighting.bracketPairs` | `true` | Color nested bracket pairs in math, including `\left( … \right)` |
+| `latexSuite.highlighting.matchingBracket` | `true` | Highlight both brackets when the cursor touches a matched pair |
+| `latexSuite.highlighting.mathDelimiters` | `true` | Color matched and unmatched math delimiters |
 | `latexSuite.debug` | `off` | Log expansions to the output channel |
+
+To customize the colors, use `workbench.colorCustomizations`. Bracket pairs
+cycle through `editorBracketHighlight.foreground1` to `foreground3`. The
+cursor pair uses `editorBracketMatch.background` and `editorBracketMatch.border`.
+Math delimiters use `latexSuite.inlineMathDelimiter`,
+`latexSuite.blockMathDelimiter`, and `latexSuite.mathFenceDelimiter`.
+Unmatched delimiters use `editorBracketHighlight.unexpectedBracket.foreground`.
 
 ## Limitations
 
-- Concealment, hover previews, bracket highlighting, and Vim mode from the
-  Obsidian plugin are not included.
+- Concealment, hover previews, and Vim mode remain specific to the Obsidian plugin.
 - Shortcuts work with one cursor only, not multiple cursors or selections.
 - Automatic expansion responds to typing one character at a time. Pasting,
   undo/redo, and IME input may not trigger it.

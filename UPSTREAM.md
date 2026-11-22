@@ -11,8 +11,27 @@ adapted for VS Code, which handles editing, placeholders, and undo.
 
 ## Differences from upstream
 
-Upstream changes through 1.13.3 have been reviewed. This port includes some of
-them, not all.
+The behavioral reference for reverse tab-out, math highlighting, and automatic
+snippet reload is upstream 1.14.5. [Pinned source at `95b654a`](https://github.com/artisticat1/obsidian-latex-suite/tree/95b654afb28cecb305656d0912b34abab3d8033d).
+
+- Reverse tab-out searches the current equation for the preceding opening
+  delimiter. It can cross the equation opener when the same whitespace rule
+  used by forward tab-out permits it. VS Code handles previous snippet
+  placeholders, selections, Tab focus mode, and ordinary outdent.
+- Bracket colors, cursor-pair highlighting, and math-delimiter colors are
+  independent VS Code decorations that follow the editor theme. Cursor
+  highlighting requires touching a bracket. Upstream also highlights an
+  enclosing pair from the middle of its contents or from a selection. The
+  port uses its Markdown and LaTeX context scanner for equation boundaries.
+  For example, a lone `$$` is an unfinished display opener. Its color stays
+  the same when the cursor enters or leaves it.
+- Trusted snippet and variable sources reload through the existing loader.
+  VS Code filesystem events cover both sides of a rename and changes in
+  nested directories. A burst of changes refreshes only the workspace
+  folders that use those paths. Watches start on first use, and the manual
+  Reload Snippets command remains available when a provider skips events.
+
+Earlier upstream changes reviewed through 1.13.3 include the following.
 
 - From 1.13.2: required-argument limits for text and snippetless macros
   (including `colorbox`, `fcolorbox`, `operatorname`, and style macros), and the
@@ -23,5 +42,5 @@ them, not all.
 - File types are configurable with `latexSuite.fileExtensions` (default `.tex`,
   `.md`, and `.qmd`), including files with other VS Code language IDs.
 - `mk` omits the empty groups that Obsidian inserts to avoid preview flicker.
-- Concealment, previews, file watching, Vim support, and Obsidian-specific
-  features such as Excalidraw do not apply to VS Code and are not ported.
+- Concealment, previews, Vim support, and Obsidian integrations such as
+  Excalidraw remain outside this port.

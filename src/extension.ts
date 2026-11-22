@@ -31,12 +31,15 @@ import {
 } from "./editor/edits";
 import * as path from "node:path";
 import * as vscode from "vscode";
+import { registerMathHighlights } from "./editor/highlights";
 import { getConfig, isSupportedDocument, type LatexSuiteConfig } from "./config";
 import { parseContext, scanContext, type ParsedContext, type CursorContext } from "./core/context";
 import {
+	findReverseTabOutTarget,
 	findTabOutTarget,
 	findUnenclosedClosingTarget,
 	getMatrixScope,
+	isInMath,
 	matrixExitTarget,
 	planAutoFraction,
 	planBracketEnlargements,
@@ -88,13 +91,12 @@ export class LatexSuiteController implements vscode.Disposable {
 	private readonly editorSelections = new Map<string, { version: number; selection: EditorSelectionSnapshot }>();
 	private readonly documentChangeTasks = new Set<Promise<void>>();
 	private readonly mutatingDocuments = new Set<string>();
-	private lastScan: {
-		document: vscode.TextDocument;
+	private readonly parsedDocuments = new Map<vscode.TextDocument, {
 		version: number;
 		source: string;
 		mathFenceLanguages: string;
 		context: ParsedContext;
-	} | undefined;
+	}>();
 	private configurationGeneration = 0;
 	private readonly shutdown = new vscode.CancellationTokenSource();
 	private disposed = false;
@@ -111,14 +113,13 @@ export class LatexSuiteController implements vscode.Disposable {
 
 		this.disposables.push(
 			this.repository,
+			registerMathHighlights((source, document, config) => this.parsedContext(source, document, config)),
 			vscode.workspace.onDidOpenTextDocument((document) => this.rememberDocument(document)),
 			vscode.workspace.onDidCloseTextDocument((document) => {
 				const key = document.uri.toString();
 				this.documentSnapshots.delete(key);
 				this.editorSelections.delete(key);
-				if (this.lastScan?.document === document) {
-					this.lastScan = undefined;
-				}
+				this.parsedDocuments.delete(document);
 			}),
 			vscode.workspace.onDidChangeTextDocument((event) => this.handleDocumentChange(event)),
 			vscode.window.onDidChangeActiveTextEditor((editor) => {
@@ -149,6 +150,12 @@ export class LatexSuiteController implements vscode.Disposable {
 			vscode.commands.registerCommand("latexSuite.expandSnippetByKey", (argument?: unknown) => this.expandSnippetByKey(argument)),
 			vscode.commands.registerCommand("latexSuite.autoFraction", () => this.runAutoFractionCommand()),
 			vscode.commands.registerCommand("latexSuite.nextBracketOrEquation", () => this.navigateBracketOrEquation()),
+			vscode.commands.registerCommand("latexSuite.previousBracketOrEquation", (fallback?: unknown) => {
+				if (this.navigatePreviousBracketOrEquation()) {
+					return true;
+				}
+				return fallback === "outdent" ? vscode.commands.executeCommand("outdent") : false;
+			}),
 			vscode.commands.registerCommand("latexSuite.matrixCell", () => this.insertMatrixCell()),
 			vscode.commands.registerCommand("latexSuite.matrixNewline", () => this.insertMatrixNewline()),
 			vscode.commands.registerCommand("latexSuite.matrixExit", () => this.exitMatrix()),
@@ -182,7 +189,7 @@ export class LatexSuiteController implements vscode.Disposable {
 		this.editorSelections.clear();
 		this.documentChangeTasks.clear();
 		this.mutatingDocuments.clear();
-		this.lastScan = undefined;
+		this.parsedDocuments.clear();
 		void this.refreshContextKeys();
 	}
 
@@ -1130,6 +1137,29 @@ export class LatexSuiteController implements vscode.Disposable {
 		await vscode.commands.executeCommand("tab");
 	}
 
+	private navigatePreviousBracketOrEquation(): boolean {
+		const editor = vscode.window.activeTextEditor;
+		if (!this.usableEditor(editor) || !editor.selection.isEmpty) {
+			return false;
+		}
+		const config = getConfig(editor.document);
+		if (!config.enabled || !config.tabOut.enabled) {
+			return false;
+		}
+		const source = editor.document.getText();
+		const cursor = editor.document.offsetAt(editor.selection.active);
+		const context = this.scan(source, cursor, editor.document, config);
+		if (!isInMath(context) || !context.innerMathBounds) {
+			return false;
+		}
+		const target = findReverseTabOutTarget(source, cursor, context.innerMathBounds, config.tabOut.exitEquationOnlyAtEndOfLine);
+		if (target === null) {
+			return false;
+		}
+		setCursor(editor, target);
+		return true;
+	}
+
 	private async navigateBracketOrEquation(editor = vscode.window.activeTextEditor): Promise<boolean> {
 		if (!this.usableEditor(editor) || !editor.selection.isEmpty) {
 			return false;
@@ -1338,27 +1368,30 @@ export class LatexSuiteController implements vscode.Disposable {
 	}
 
 	private scan(source: string, offset: number, document: vscode.TextDocument, config: LatexSuiteConfig): CursorContext {
+		return this.parsedContext(source, document, config).at(offset);
+	}
+
+	private parsedContext(source: string, document: vscode.TextDocument, config: LatexSuiteConfig): ParsedContext {
 		const mathFenceLanguages = config.forceMathLanguages.join("\u0000");
+		const cached = this.parsedDocuments.get(document);
 		if (
-			this.lastScan?.document === document &&
-			this.lastScan.version === document.version &&
-			this.lastScan.source === source &&
-			this.lastScan.mathFenceLanguages === mathFenceLanguages
+			cached?.version === document.version &&
+			cached.source === source &&
+			cached.mathFenceLanguages === mathFenceLanguages
 		) {
-			return this.lastScan.context.at(offset);
+			return cached.context;
 		}
 		const context = parseContext(source, {
 			language: document.languageId === "latex" || /\.tex$/i.test(document.uri.path) ? "latex" : "markdown",
 			mathFenceLanguages: config.forceMathLanguages,
 		});
-		this.lastScan = {
-			document,
+		this.parsedDocuments.set(document, {
 			version: document.version,
 			source,
 			mathFenceLanguages,
 			context,
-		};
-		return context.at(offset);
+		});
+		return context;
 	}
 
 	private matchSafely(
@@ -1581,20 +1614,25 @@ export class LatexSuiteController implements vscode.Disposable {
 	private async updateContextKeys(): Promise<void> {
 		const editor = vscode.window.activeTextEditor;
 		let inMatrix = false;
+		let inMath = false;
 		if (this.usableEditor(editor) && editor.selection.isEmpty) {
 			const config = getConfig(editor.document);
 			if (config.enabled) {
 				const source = editor.document.getText();
 				const cursor = editor.document.offsetAt(editor.selection.active);
 				const context = this.scan(source, cursor, editor.document, config);
+				inMath = isInMath(context);
 				inMatrix = config.matrixShortcuts.enabled && getMatrixScope(context, config.matrixShortcuts) !== null;
 			}
 		}
-		await vscode.commands.executeCommand(
-			"setContext", "latexSuite.supportedDocument",
-			Boolean(!this.disposed && editor && isSupportedDocument(editor.document)),
-		);
-		await vscode.commands.executeCommand("setContext", "latexSuite.inMatrix", inMatrix);
+		await Promise.all([
+			vscode.commands.executeCommand(
+				"setContext", "latexSuite.supportedDocument",
+				Boolean(!this.disposed && editor && isSupportedDocument(editor.document)),
+			),
+			vscode.commands.executeCommand("setContext", "latexSuite.inMatrix", inMatrix),
+			vscode.commands.executeCommand("setContext", "latexSuite.inMath", inMath),
+		]);
 	}
 
 	private async reloadSnippets(): Promise<void> {

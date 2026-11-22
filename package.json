@@ -54,6 +54,23 @@
     }
   },
   "contributes": {
+    "colors": [
+      {
+        "id": "latexSuite.inlineMathDelimiter",
+        "description": "Color of paired inline math delimiters.",
+        "defaults": { "dark": "charts.green", "light": "charts.green", "highContrast": "charts.green" }
+      },
+      {
+        "id": "latexSuite.blockMathDelimiter",
+        "description": "Color of paired display math delimiters.",
+        "defaults": { "dark": "charts.blue", "light": "charts.blue", "highContrast": "charts.blue" }
+      },
+      {
+        "id": "latexSuite.mathFenceDelimiter",
+        "description": "Color of paired fence markers around math code blocks.",
+        "defaults": { "dark": "charts.purple", "light": "charts.purple", "highContrast": "charts.purple" }
+      }
+    ],
     "commands": [
       {
         "command": "latexSuite.addSnippetFile",
@@ -84,6 +101,11 @@
         "command": "latexSuite.nextBracketOrEquation",
         "category": "LaTeX Suite",
         "title": "Move to Next Bracket or Exit Equation"
+      },
+      {
+        "command": "latexSuite.previousBracketOrEquation",
+        "category": "LaTeX Suite",
+        "title": "Move to Previous Bracket or Exit Equation"
       },
       {
         "command": "latexSuite.matrixCell",
@@ -136,6 +158,12 @@
         "when": "editorTextFocus && !editorReadonly && !editorHasSelection && !editorHasMultipleSelections && !inSnippetMode && !suggestWidgetVisible && !inlineSuggestionVisible && !inlineEditIsVisible && !renameInputVisible && !editorTabMovesFocus && config.editor.tabCompletion == off && config.latexSuite.enabled && latexSuite.supportedDocument"
       },
       {
+        "command": "latexSuite.previousBracketOrEquation",
+        "key": "shift+tab",
+        "args": "outdent",
+        "when": "editorTextFocus && !editorReadonly && !editorHasSelection && !editorHasMultipleSelections && !inSnippetMode && !suggestWidgetVisible && !hasOtherSuggestions && !inlineSuggestionVisible && !inlineEditIsVisible && !renameInputVisible && !editorTabMovesFocus && config.latexSuite.enabled && config.latexSuite.tabOut.enabled && latexSuite.inMath"
+      },
+      {
         "command": "latexSuite.internal.matrixNewline",
         "key": "enter",
         "when": "editorTextFocus && !editorReadonly && !editorHasSelection && !editorHasMultipleSelections && !suggestWidgetVisible && !inlineSuggestionVisible && !inlineEditIsVisible && !renameInputVisible && latexSuite.inMatrix && config.latexSuite.enabled && config.latexSuite.matrixShortcuts.enabled && latexSuite.supportedDocument"
@@ -154,7 +182,7 @@
           "default": true,
           "scope": "resource",
           "order": 1,
-          "markdownDescription": "Enable LaTeX Suite typing shortcuts in configured file types."
+          "markdownDescription": "Enable LaTeX Suite typing shortcuts and math highlighting in configured file types."
         },
         "latexSuite.snippets.enabled": {
           "type": "boolean",
@@ -171,7 +199,7 @@
           "default": [],
           "scope": "resource",
           "order": 12,
-          "markdownDescription": "Snippet files or folders to load. Any custom snippets replace the bundled set. Relative paths resolve against the workspace folder.\n\nSnippet files are JavaScript and run as code. Only add files you trust."
+          "markdownDescription": "Snippet files or folders to load and watch for changes. Folders include their subfolders. Any custom snippets replace the bundled set. Relative paths resolve against the workspace folder.\n\nSnippet files are JavaScript and run as code. Only add files you trust."
         },
         "latexSuite.snippets.source": {
           "type": "string",
@@ -189,7 +217,7 @@
           "default": [],
           "scope": "resource",
           "order": 14,
-          "markdownDescription": "JavaScript files that export snippet variables. These are added to the bundled variables and override any with the same name. Relative paths resolve against the workspace folder."
+          "markdownDescription": "JavaScript files or folders containing snippet variables. Files reload automatically, including those in subfolders. Custom variables override bundled variables with the same name. Relative paths resolve against the workspace folder."
         },
         "latexSuite.snippets.variablesSource": {
           "type": "string",
@@ -331,7 +359,7 @@
           "default": true,
           "scope": "resource",
           "order": 50,
-          "markdownDescription": "Use `Tab` to jump past closing brackets and out of equations."
+          "markdownDescription": "Use `Tab` and `Shift+Tab` to move past delimiters or leave an equation."
         },
         "latexSuite.tabOut.closingSymbols": {
           "type": "array",
@@ -361,7 +389,7 @@
           "default": true,
           "scope": "resource",
           "order": 52,
-          "markdownDescription": "Only let `Tab` leave an equation when nothing but whitespace remains before its end."
+          "markdownDescription": "Require only whitespace between the cursor and the equation's end for `Tab`, or its start for `Shift+Tab`, before leaving the equation."
         },
         "latexSuite.bracketEnlargement.enabled": {
           "type": "boolean",
@@ -394,6 +422,27 @@
           "order": 62,
           "markdownDescription": "Add a space just inside brackets after enlarging them."
         },
+        "latexSuite.highlighting.bracketPairs": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "order": 63,
+          "description": "Color nested math bracket pairs by depth and mark unpaired brackets."
+        },
+        "latexSuite.highlighting.matchingBracket": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "order": 64,
+          "description": "Highlight both ends of the math bracket pair beside the cursor."
+        },
+        "latexSuite.highlighting.mathDelimiters": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "order": 65,
+          "description": "Color paired inline, display and math fence delimiters, and mark unmatched math delimiters."
+        },
         "latexSuite.debug": {
           "type": "string",
           "enum": [
@@ -425,7 +474,7 @@
           ],
           "scope": "resource",
           "order": 2,
-          "markdownDescription": "File extensions where LaTeX Suite typing shortcuts are active. Entries may include the leading dot and are matched without regard to case. Changes take effect immediately. Use an empty list to disable all file types. Untitled Markdown and LaTeX documents follow the `.md` and `.tex` entries."
+          "markdownDescription": "File extensions where LaTeX Suite typing shortcuts and math highlighting are active. Entries may include the leading dot and are matched without regard to case. Changes take effect immediately. Use an empty list to disable all file types. Untitled Markdown and LaTeX documents follow the `.md` and `.tex` entries."
         }
       }
     }

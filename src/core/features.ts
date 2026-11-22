@@ -171,21 +171,26 @@ interface Token {
 	end: number;
 }
 
-const LEFT_COMMANDS = new Set(["\\left", "\\bigl", "\\Bigl", "\\biggl", "\\Biggl"]);
-const RIGHT_COMMANDS = new Set(["\\right", "\\bigr", "\\Bigr", "\\biggr", "\\Biggr"]);
-const DELIMITERS = new Set([
-	"(", ")", "[", "]", "{", "}", "\\{", "\\}", "\\lbrack", "\\rbrack", "\\lbrace", "\\rbrace",
-	"<", ">", "\\langle", "\\rangle", "\\lt", "\\gt", "|", "\\vert", "\\lvert", "\\rvert",
-	"\\|", "\\Vert", "\\lVert", "\\rVert", "\\lfloor", "\\rfloor", "\\lceil", "\\rceil",
-	"\\ulcorner", "\\urcorner", "/", "\\\\", "\\backslash", "\\uparrow", "\\downarrow",
-	"\\Uparrow", "\\Downarrow", ".",
+export const LEFT_COMMANDS = new Set(["\\left", "\\bigl", "\\Bigl", "\\biggl", "\\Biggl"]);
+export const RIGHT_COMMANDS = new Set(["\\right", "\\bigr", "\\Bigr", "\\biggr", "\\Biggr"]);
+export const BRACKET_PAIRS = new Map(Object.entries({
+	"(": ")", "[": "]", "{": "}", "\\{": "\\}", "\\lbrace": "\\rbrace",
+	"\\lparen": "\\rparen", "\\lbrack": "\\rbrack", "\\langle": "\\rangle",
+	"\\lvert": "\\rvert", "\\lVert": "\\rVert", "\\lfloor": "\\rfloor",
+	"\\lceil": "\\rceil", "\\ulcorner": "\\urcorner", "\\llcorner": "\\lrcorner",
+	"\\lgroup": "\\rgroup", "\\lmoustache": "\\rmoustache",
+}));
+export const DELIMITERS = new Set([
+	...BRACKET_PAIRS.keys(), ...BRACKET_PAIRS.values(),
+	"<", ">", "\\lt", "\\gt", "|", "\\vert", "\\|", "\\Vert", "/", "\\\\", "\\backslash",
+	"\\uparrow", "\\downarrow", "\\Uparrow", "\\Downarrow", "\\updownarrow", "\\Updownarrow", ".",
 ]);
 
 /** Return an absolute target immediately after the next configured closer. */
 export function findTabOutTarget(source: string, cursor: number, bounds: MathBounds, closingSymbols: ReadonlySet<string>): number | null {
 	const text = source.slice(bounds.inner_start, bounds.inner_end);
 	const relativeCursor = cursor - bounds.inner_start;
-	const tokens = tokenizeLatex(text);
+	const tokens = [...tokenizeLatex(text)];
 	const first = tokens.findIndex((token) => token.end > relativeCursor);
 	for (let index = first < 0 ? tokens.length : first; index < tokens.length; index += 1) {
 		const token = tokens[index];
@@ -204,6 +209,32 @@ export function findTabOutTarget(source: string, cursor: number, bounds: MathBou
 		}
 	}
 	return null;
+}
+
+/** Step before the preceding opener, even if it already has a matching closer. */
+export function findReverseTabOutTarget(source: string, cursor: number, bounds: MathBounds, exitOnlyAtStart: boolean): number | null {
+	let target: number | null = null;
+	let previous = "";
+	const relativeCursor = cursor - bounds.inner_start;
+	const equation = source.slice(bounds.inner_start, bounds.inner_end);
+	for (const token of tokenizeLatex(equation)) {
+		if (token.start >= relativeCursor) {
+			break;
+		}
+		if (/^\s/.test(token.text)) {
+			continue;
+		}
+		if (LEFT_COMMANDS.has(token.text)) {
+			target = bounds.inner_start + token.start;
+		} else if ((BRACKET_PAIRS.has(token.text) || token.text === "<") && !LEFT_COMMANDS.has(previous) && !RIGHT_COMMANDS.has(previous)) {
+			target = bounds.inner_start + token.start;
+		}
+		previous = token.text;
+	}
+	if (target !== null) {
+		return target;
+	}
+	return exitOnlyAtStart && equation.slice(0, relativeCursor).trim() ? null : bounds.outer_start;
 }
 
 /** Used by the matrix Tab shortcut: only skip a closer not enclosed after the cursor. */
@@ -238,7 +269,7 @@ export function planBracketEnlargements(
 ): TextEditPlan[] {
 	const offset = bounds.inner_start;
 	const text = source.slice(bounds.inner_start, bounds.inner_end);
-	const tokens = tokenizeLatex(text);
+	const tokens = [...tokenizeLatex(text)];
 	const pairs: Record<string, string> = {
 		"(": ")", "[": "]", "\\{": "\\}", "\\lbrace": "\\rbrace", "\\langle": "\\rangle",
 		"\\lvert": "\\rvert", "\\lVert": "\\rVert", "\\lfloor": "\\rfloor", "\\lceil": "\\rceil", "\\ulcorner": "\\urcorner",
@@ -288,8 +319,12 @@ export function planBracketEnlargements(
 	return edits.sort((left, right) => right.start - left.start);
 }
 
+export function isInMath(context: CursorContext): boolean {
+	return context.mode.inlineMath || context.mode.blockMath || context.mode.codeMath;
+}
+
 export function isStrictlyInMath(context: CursorContext): boolean {
-	return (context.mode.inlineMath || context.mode.blockMath || context.mode.codeMath) && !context.mode.textEnv && !context.mode.snippetlessEnv;
+	return isInMath(context) && !context.mode.textEnv && !context.mode.snippetlessEnv;
 }
 
 export function plainReplacement(text: string, tabstopIndex?: number): ResultInsert {
@@ -299,21 +334,10 @@ export function plainReplacement(text: string, tabstopIndex?: number): ResultIns
 	};
 }
 
-function tokenizeLatex(source: string): Token[] {
-	const tokens: Token[] = [];
-	for (let index = 0; index < source.length;) {
-		if (source[index] === "\\") {
-			const command = /^\\(?:[A-Za-z]+\*?|.)/.exec(source.slice(index));
-			if (command) {
-				tokens.push({ text: command[0], start: index, end: index + command[0].length });
-				index += command[0].length;
-				continue;
-			}
-		}
-		tokens.push({ text: source[index], start: index, end: index + 1 });
-		index += 1;
+function* tokenizeLatex(source: string): Generator<Token> {
+	for (const match of source.matchAll(/%[^\r\n]*|\\(?:[A-Za-z]+\*?|.)|[\s\S]/g)) {
+		yield { text: match[0], start: match.index, end: match.index + match[0].length };
 	}
-	return tokens;
 }
 
 function isWithinDelimitedRegion(source: string, cursor: number, bounds: MathBounds, region: { open: string; close: string }): boolean {

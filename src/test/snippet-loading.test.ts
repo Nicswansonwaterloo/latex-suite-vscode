@@ -1,10 +1,12 @@
 import * as assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import * as vscode from "vscode";
 import { getConfig, type LatexSuiteConfig } from "../config";
 import { SnippetRepository } from "../snippetRepository";
+import { SnippetFileWatcher } from "../snippetFileWatcher";
 import { matchFirstSnippet } from "../core/snippets";
 
 suite("snippet collection selection", () => {
@@ -90,6 +92,83 @@ suite("snippet collection selection", () => {
 		assert.match(bundle.errors[0], /missing\.js/);
 	});
 
+	test("moving and restoring an external ancestor updates an explicitly configured file", async function () {
+		this.timeout(15_000);
+		const team = path.join(directory, "team");
+		const moved = path.join(directory, "moved");
+		const file = path.join(team, "sources", "user.js");
+		await mkdir(path.dirname(file), { recursive: true });
+		await writeFile(file, custom);
+		config.snippets.files = [file];
+		const initial = await repository.get(document, config);
+		assert.deepEqual(initial.errors, []);
+
+		// An external OS watch starts asynchronously. Observe a real edit before
+		// performing the directory rename, which may produce only a single event.
+		const deadline = Date.now() + 4000;
+		while (repository.isCurrent(initial) && Date.now() < deadline) {
+			await writeFile(file, custom);
+			await delay(400);
+		}
+		assert.ok(!repository.isCurrent(initial), "external watcher is receiving changes");
+		for (const [from, to, missing] of [[team, moved, true], [moved, team, false]] as const) {
+			await rename(from, to);
+			const deadline = Date.now() + 4000;
+			let bundle = await repository.get(document, config);
+			while ((bundle.errors.length > 0) !== missing && Date.now() < deadline) {
+				await delay(40);
+				bundle = await repository.get(document, config);
+			}
+			assert.equal(bundle.errors.length, missing ? 1 : 0);
+			assert.deepEqual(bundle.snippets.map(s => s.trigger), missing ? [] : ["customOnly"]);
+		}
+	});
+
+	test("source watchers coalesce create/change/delete bursts and cancel pending reloads on disposal", async () => {
+		const createWatcher = vscode.workspace.createFileSystemWatcher;
+		const events = {
+			create: new vscode.EventEmitter<vscode.Uri>(), change: new vscode.EventEmitter<vscode.Uri>(),
+			delete: new vscode.EventEmitter<vscode.Uri>(),
+		};
+		let watched = 0;
+		let watchedForChanges = 0;
+		let disposed = 0;
+		let reloaded = 0;
+		const uri = vscode.Uri.file(directory);
+		let watcher: SnippetFileWatcher | undefined;
+		try {
+			vscode.workspace.createFileSystemWatcher = (_pattern, _ignoreCreate, ignoreChanges) => {
+				watched++;
+				if (!ignoreChanges) { watchedForChanges++; }
+				return {
+					ignoreCreateEvents: false, ignoreChangeEvents: false, ignoreDeleteEvents: false,
+					onDidCreate: events.create.event, onDidChange: events.change.event, onDidDelete: events.delete.event,
+					dispose: () => { disposed++; },
+				};
+			};
+			watcher = new SnippetFileWatcher([uri, uri], () => { reloaded++; });
+			watcher.setDirectory(uri, true);
+			watcher.setDirectory(uri, true);
+			assert.equal(watchedForChanges, 2, "only the entry and its recursive watcher observe ordinary saves");
+			assert.ok(watched > 2, "containing directories are watched for create/delete events");
+			events.delete.fire(uri);
+			events.create.fire(uri);
+			events.change.fire(uri);
+			assert.equal(reloaded, 0);
+			await delay(300);
+			assert.equal(reloaded, 1);
+			events.change.fire(uri);
+			watcher.dispose();
+			await delay(300);
+			assert.equal(reloaded, 1, "disposal cancels the pending event");
+			assert.equal(disposed, watched);
+		} finally {
+			vscode.workspace.createFileSystemWatcher = createWatcher;
+			watcher?.dispose();
+			for (const event of Object.values(events)) { event.dispose(); }
+		}
+	});
+
 	test("invalid custom JavaScript reports an error without restoring defaults", async () => {
 		config.snippets.source = "export default [";
 		const bundle = await repository.get(document, config);
@@ -158,24 +237,43 @@ suite("snippet collection selection", () => {
 
 	test("simulated trust gate: Restricted Mode uses defaults without evaluating or reading custom sources", async () => {
 		const descriptor = Object.getOwnPropertyDescriptor(vscode.workspace, "isTrusted")!;
+		const grantDescriptor = Object.getOwnPropertyDescriptor(vscode.workspace, "onDidGrantWorkspaceTrust")!;
+		const grant = new vscode.EventEmitter<void>();
+		const createWatcher = vscode.workspace.createFileSystemWatcher;
+		const settings = vscode.workspace.getConfiguration("latexSuite", document);
+		const oldFiles = settings.inspect<string[]>("snippets.files")?.globalValue;
+		let watches = 0;
 		try {
+			const files = [path.join(directory, "missing.js")];
+			await settings.update("snippets.files", files, vscode.ConfigurationTarget.Global);
+			repository.dispose();
 			Object.defineProperty(vscode.workspace, "isTrusted", { configurable: true, get: () => false });
+			Object.defineProperty(vscode.workspace, "onDidGrantWorkspaceTrust", { configurable: true, value: grant.event });
+			vscode.workspace.createFileSystemWatcher = (...args) => { watches++; return createWatcher(...args); };
+			repository = new SnippetRepository(output);
 			config.snippets.source = 'throw new Error("must not execute")';
 			config.snippets.variablesSource = config.snippets.source;
-			config.snippets.files = [path.join(directory, "missing.js")];
+			config.snippets.files = files;
 			config.snippets.variableFiles = config.snippets.files;
 			const bundle = await repository.get(document, config);
 			assert.ok(bundle.snippets.length > 100);
 			assert.deepEqual(bundle.errors, []);
 			assert.equal(bundle.customSourcesSkipped, true);
-			// A changed trust state must not reuse the Restricted Mode bundle.
+			assert.equal(watches, 0);
 			Object.defineProperty(vscode.workspace, "isTrusted", { configurable: true, get: () => true });
+			grant.fire();
+			assert.equal(repository.isCurrent(bundle), false);
+			assert.ok(watches > 0, "granting trust starts watches for the configured paths");
 			const trusted = await repository.get(document, config);
 			assert.deepEqual(trusted.snippets, []);
 			assert.equal(trusted.errors.length, 4);
 			assert.equal(trusted.customSourcesSkipped, false);
 		} finally {
+			vscode.workspace.createFileSystemWatcher = createWatcher;
+			Object.defineProperty(vscode.workspace, "onDidGrantWorkspaceTrust", grantDescriptor);
 			Object.defineProperty(vscode.workspace, "isTrusted", descriptor);
+			grant.dispose();
+			await settings.update("snippets.files", oldFiles, vscode.ConfigurationTarget.Global);
 		}
 	});
 

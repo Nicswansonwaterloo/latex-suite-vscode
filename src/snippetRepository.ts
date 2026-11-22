@@ -11,7 +11,7 @@ import {
 	type Node,
 } from "acorn";
 import * as vscode from "vscode";
-import { type LatexSuiteConfig } from "./config";
+import { getConfig, type LatexSuiteConfig } from "./config";
 import { type ReadOnlyCodeMirrorState } from "./core/editorAdapter";
 import { createLatexSuiteApi, type LatexSuiteApi } from "./core/nodes";
 import {
@@ -24,6 +24,7 @@ import {
 import defaultSnippetVariablesSource from "./upstream/default_snippet_variables.js";
 import defaultSnippetSource from "./upstream/default_snippets.js";
 import { ALL_MACROS } from "./upstream/macros";
+import { SnippetFileWatcher } from "./snippetFileWatcher";
 
 export interface SnippetFunctionAdapter {
 	state: ReadOnlyCodeMirrorState;
@@ -35,7 +36,7 @@ export interface SnippetBundle {
 	variables: SnippetVariables;
 	errors: string[];
 	customSourcesSkipped: boolean;
-	generation: number;
+	generation: { current: boolean };
 }
 
 interface SourceFile {
@@ -44,49 +45,114 @@ interface SourceFile {
 	uri?: vscode.Uri;
 }
 
+type Resource = Pick<vscode.TextDocument, "uri" | "languageId">;
+
+interface Collection {
+	resource: Resource;
+	config: LatexSuiteConfig;
+	settingsKey: string;
+	generation: SnippetBundle["generation"];
+	watcher?: SnippetFileWatcher;
+	pending?: Promise<SnippetBundle>;
+}
+
 /** Loads and caches executable upstream-format snippet modules per resource. */
 export class SnippetRepository implements vscode.Disposable {
-	private readonly cache = new Map<string, Promise<SnippetBundle>>();
+	private readonly collections = new Map<string, Collection>();
 	private readonly disposables: vscode.Disposable[];
-	private generation = 0;
 
 	constructor(private readonly output: vscode.OutputChannel) {
 		this.disposables = [
 			vscode.workspace.onDidChangeConfiguration((event) => {
 				if (event.affectsConfiguration("latexSuite.snippets")) {
-					this.clear();
+					for (const { resource } of this.collections.values()) {
+						if (event.affectsConfiguration("latexSuite.snippets", resource)) {
+							this.getCollection(resource, getConfig(resource));
+						}
+					}
 				}
 			}),
-			vscode.workspace.onDidGrantWorkspaceTrust(() => this.clear()),
+			vscode.workspace.onDidGrantWorkspaceTrust(() => {
+				for (const { resource } of this.collections.values()) {
+					this.getCollection(resource, getConfig(resource));
+				}
+			}),
+			vscode.workspace.onDidChangeWorkspaceFolders(() => {
+				for (const [key, collection] of this.collections) {
+					// Relative paths for a loose document fall back to the first workspace folder.
+					if (!vscode.workspace.getWorkspaceFolder(collection.resource.uri) || key !== collectionKey(collection.resource)) {
+						this.discard(collection);
+						this.collections.delete(key);
+					}
+				}
+			}),
 		];
 	}
 
-	get(document: vscode.TextDocument, config: LatexSuiteConfig): Promise<SnippetBundle> {
-		const folder = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.toString() ?? "";
-		const key = JSON.stringify({
-			folder,
-			language: document.languageId,
+	get(resource: Resource, config: LatexSuiteConfig): Promise<SnippetBundle> {
+		const collection = this.getCollection(resource, config);
+		collection.pending ??= this.load(collection, collection.generation);
+		return collection.pending;
+	}
+
+	private getCollection(resource: Resource, config: LatexSuiteConfig): Collection {
+		const key = collectionKey(resource);
+		const settingsKey = JSON.stringify({
 			trusted: vscode.workspace.isTrusted,
 			files: config.snippets.files,
 			source: config.snippets.source,
 			variableFiles: config.snippets.variableFiles,
 			variablesSource: config.snippets.variablesSource,
 		});
-		let pending = this.cache.get(key);
-		if (!pending) {
-			pending = this.load(document, config, this.generation);
-			this.cache.set(key, pending);
+		const previous = this.collections.get(key);
+		if (previous?.settingsKey === settingsKey) {
+			return previous;
 		}
-		return pending;
+		if (previous) {
+			this.discard(previous);
+		}
+		const collection: Collection = {
+			resource: { uri: resource.uri, languageId: resource.languageId },
+			config, settingsKey, generation: { current: true },
+		};
+		if (vscode.workspace.isTrusted) {
+			const paths = nonEmptyConfiguredPaths([...config.snippets.files, ...config.snippets.variableFiles]);
+			const uris: vscode.Uri[] = [];
+			for (const configuredPath of paths) {
+				try {
+					uris.push(resolveConfiguredUri(configuredPath, resource.uri));
+				} catch {
+					// The loader reports unresolved paths together with read and parse errors.
+				}
+			}
+			collection.watcher = new SnippetFileWatcher(uris, () => {
+				if (!collection.pending) {
+					return;
+				}
+				collection.generation.current = false;
+				collection.generation = { current: true };
+				collection.pending = this.load(collection, collection.generation);
+				void collection.pending.catch((error: unknown) => this.output.appendLine(formatError("Automatic snippet reload", error)));
+			});
+		}
+		this.collections.set(key, collection);
+		return collection;
+	}
+
+	private discard(collection: Collection): void {
+		collection.generation.current = false;
+		collection.watcher?.dispose();
 	}
 
 	clear(): void {
-		this.generation += 1;
-		this.cache.clear();
+		for (const collection of this.collections.values()) {
+			this.discard(collection);
+		}
+		this.collections.clear();
 	}
 
 	isCurrent(bundle: SnippetBundle): boolean {
-		return bundle.generation === this.generation;
+		return bundle.generation.current;
 	}
 
 	dispose(): void {
@@ -97,10 +163,10 @@ export class SnippetRepository implements vscode.Disposable {
 	}
 
 	private async load(
-		document: vscode.TextDocument,
-		config: LatexSuiteConfig,
-		generation: number,
+		collection: Collection,
+		generation: SnippetBundle["generation"],
 	): Promise<SnippetBundle> {
+		const { config } = collection;
 		const errors: string[] = [];
 		const loadCustom = vscode.workspace.isTrusted;
 		const variables: SnippetVariables = {};
@@ -117,13 +183,13 @@ export class SnippetRepository implements vscode.Disposable {
 
 		if (loadCustom) {
 			const variableSources = await this.collectSources(
-				document,
+				collection, generation,
 				config.snippets.variableFiles,
 				config.snippets.variablesSource,
 				"inline snippet variables",
 				errors,
 			);
-			if (generation !== this.generation) {
+			if (!generation.current) {
 				return staleBundle(generation);
 			}
 			for (const source of variableSources) {
@@ -153,13 +219,13 @@ export class SnippetRepository implements vscode.Disposable {
 		}
 		if (useCustomSnippets) {
 			const customSources = await this.collectSources(
-				document,
+				collection, generation,
 				config.snippets.files,
 				config.snippets.source,
 				"inline snippets",
 				errors,
 			);
-			if (generation !== this.generation) {
+			if (!generation.current) {
 				return staleBundle(generation);
 			}
 			rawSources.push(...customSources);
@@ -190,7 +256,8 @@ export class SnippetRepository implements vscode.Disposable {
 	}
 
 	private async collectSources(
-		document: vscode.TextDocument,
+		collection: Collection,
+		generation: SnippetBundle["generation"],
 		configuredPaths: readonly string[],
 		inlineSource: string,
 		inlineIdentifier: string,
@@ -202,8 +269,12 @@ export class SnippetRepository implements vscode.Disposable {
 		}
 		for (const configuredPath of nonEmptyConfiguredPaths(configuredPaths)) {
 			try {
-				const uri = resolveConfiguredUri(configuredPath, document.uri);
-				sources.push(...await readSourceUri(uri));
+				const uri = resolveConfiguredUri(configuredPath, collection.resource.uri);
+				sources.push(...await readSourceUri(uri, (directory) => {
+					if (generation.current) {
+						collection.watcher?.setDirectory(uri, directory);
+					}
+				}));
 			} catch (error) {
 				errors.push(formatError(configuredPath, error));
 			}
@@ -212,7 +283,12 @@ export class SnippetRepository implements vscode.Disposable {
 	}
 }
 
-function staleBundle(generation: number): SnippetBundle {
+function collectionKey(resource: Resource): string {
+	const folder = vscode.workspace.getWorkspaceFolder(resource.uri)?.uri.toString() ?? "";
+	return JSON.stringify([folder, resource.languageId]);
+}
+
+function staleBundle(generation: SnippetBundle["generation"]): SnippetBundle {
 	return {
 		snippets: [],
 		variables: {},
@@ -433,8 +509,9 @@ function assertVariableObject(value: unknown): Record<string, unknown> {
 	return value as Record<string, unknown>;
 }
 
-async function readSourceUri(uri: vscode.Uri): Promise<SourceFile[]> {
+async function readSourceUri(uri: vscode.Uri, onRootType?: (directory: boolean) => void): Promise<SourceFile[]> {
 	const stat = await vscode.workspace.fs.stat(uri);
+	onRootType?.((stat.type & vscode.FileType.Directory) !== 0);
 	if ((stat.type & vscode.FileType.Directory) === 0) {
 		const bytes = await vscode.workspace.fs.readFile(uri);
 		return [{ identifier: uri.toString(), source: new TextDecoder().decode(bytes), uri }];
