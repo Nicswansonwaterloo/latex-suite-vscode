@@ -213,7 +213,7 @@ export const DEFAULT_MATH_ENVIRONMENTS: ReadonlySet<string> = new Set([
 	"array",
 ]);
 
-interface Interval {
+export interface OffsetRange {
 	start: number;
 	end: number;
 }
@@ -270,14 +270,14 @@ function containsCursor(bounds: Bounds, offset: number): boolean {
  * once, then use an upper-bound search for each lookup.
  */
 class IntervalLookup {
-	private readonly intervals: readonly Interval[];
+	private readonly intervals: readonly OffsetRange[];
 
-	constructor(intervals: readonly Interval[]) {
+	constructor(intervals: readonly OffsetRange[]) {
 		const ordered = intervals
 			.filter((interval) => interval.end > interval.start)
 			.map((interval) => ({ ...interval }))
 			.sort((left, right) => left.start - right.start || left.end - right.end);
-		const merged: Interval[] = [];
+		const merged: OffsetRange[] = [];
 		for (const interval of ordered) {
 			const previous = merged.at(-1);
 			if (previous && interval.start <= previous.end) {
@@ -376,6 +376,14 @@ function scanFences(source: string): FenceRecord[] {
 	}
 
 	return result;
+}
+
+function fenceMathBounds(fence: FenceRecord): MathBounds {
+	return {
+		inner_start: fence.inner_start, inner_end: fence.inner_end,
+		outer_start: fence.outer_start, outer_end: fence.outer_end,
+		mode: "codeMath", delimiter: fence.fence.repeat(fence.fenceLength), closed: fence.closed,
+	};
 }
 
 function fenceAt(records: readonly FenceRecord[], offset: number): FenceRecord | null {
@@ -494,7 +502,7 @@ function makeIgnoredIntervals(
 	language: DocumentLanguage,
 	fences: readonly FenceRecord[],
 	inlineCode: readonly InlineCodeContext[],
-): Interval[] {
+): OffsetRange[] {
 	if (language === "latex") {
 		return [];
 	}
@@ -560,7 +568,7 @@ function collectDollarMath(source: string, ignored: IntervalLookup): MathBounds[
 	return result;
 }
 
-function collectCommandDelimitedMath(source: string, ignored: IntervalLookup): MathBounds[] {
+function collectCommandDelimitedMath(source: string, ignored: IntervalLookup, unmatched?: OffsetRange[]): MathBounds[] {
 	const result: MathBounds[] = [];
 	const pairs = [
 		{ open: "\\(", close: "\\)", mode: "inlineMath" as const },
@@ -594,6 +602,9 @@ function collectCommandDelimitedMath(source: string, ignored: IntervalLookup): M
 				open = null;
 				index += 2;
 				continue;
+			}
+			if (token === pair.open || token === pair.close) {
+				unmatched?.push({ start: index, end: index + 2 });
 			}
 			index++;
 		}
@@ -664,6 +675,7 @@ function collectEnvironments(
 	source: string,
 	commands: readonly CommandToken[],
 	pairs: ReadonlyMap<number, BracketPair>,
+	onUnmatchedEnd?: (name: string, start: number, end: number) => void,
 ): EnvironmentContext[] {
 	const environments: EnvironmentContext[] = [];
 	const stack: { command: CommandToken; name: string; namePair: BracketPair }[] = [];
@@ -684,6 +696,7 @@ function collectEnvironments(
 			matching--;
 		}
 		if (matching < 0) {
+			onUnmatchedEnd?.(parsed.name, command.start, parsed.pair.close + 1);
 			continue;
 		}
 		const begin = stack[matching];
@@ -809,6 +822,11 @@ function makeMode(
  */
 export interface ParsedContext {
 	at(offset: number): CursorContext;
+	readonly mathRegions: readonly MathBounds[];
+	readonly unmatchedMathDelimiters: readonly OffsetRange[];
+	readonly textArguments: readonly Bounds[];
+	/** TeX comments and Markdown code/marker spans excluded by the scanner. */
+	isIgnored(offset: number): boolean;
 }
 
 /** Parse once per source revision; cursor movement only queries the parsed ranges. */
@@ -866,7 +884,12 @@ export function parseContext(source: string, options: ContextScanOptions = {}): 
 	const latexIgnored = new IntervalLookup([...baseIgnoredIntervals, ...commentIntervals]);
 	const commands = scanCommandTokens(source, latexIgnored);
 	const bracePairs = buildBracePairs(source, latexIgnored);
-	const allEnvironments = collectEnvironments(source, commands, bracePairs);
+	const unmatchedMathDelimiters: OffsetRange[] = [];
+	const allEnvironments = collectEnvironments(source, commands, bracePairs, (name, start, end) => {
+		if (mathEnvironmentNames.has(name)) {
+			unmatchedMathDelimiters.push({ start, end });
+		}
+	});
 	const allMacros = collectMacros(source, commands, bracePairs);
 
 	const environmentMath: MathBounds[] = allEnvironments
@@ -878,7 +901,7 @@ export function parseContext(source: string, options: ContextScanOptions = {}): 
 		}));
 	const delimiterMath = [
 		...collectDollarMath(source, latexIgnored),
-		...collectCommandDelimitedMath(source, latexIgnored),
+		...collectCommandDelimitedMath(source, latexIgnored, unmatchedMathDelimiters),
 		...environmentMath,
 	];
 	const textAreas = options.textMacros ?? DEFAULT_TEXT_MACROS;
@@ -890,6 +913,7 @@ export function parseContext(source: string, options: ContextScanOptions = {}): 
 		const fenceIsMath = currentFence !== null && mathFenceLanguages.has(
 			normalizeLanguage(currentFence.language, caseSensitive),
 		);
+		const mathFence = fenceIsMath ? fenceMathBounds(currentFence) : null;
 		const containingMath = delimiterMath.filter((item) => containsCursor(item, position)).sort(byInnerFirst);
 		// Upstream determines the outer editor math mode, then uses the innermost
 		// equation only to reset text-macro scope.
@@ -933,28 +957,8 @@ export function parseContext(source: string, options: ContextScanOptions = {}): 
 			language,
 			kind,
 			mode: makeMode(kind, currentFence, textEnv, snippetlessEnv),
-			mathBounds: currentFence && fenceIsMath
-				? {
-					inner_start: currentFence.inner_start,
-					inner_end: currentFence.inner_end,
-					outer_start: currentFence.outer_start,
-					outer_end: currentFence.outer_end,
-					mode: "codeMath",
-					delimiter: currentFence.fence.repeat(currentFence.fenceLength),
-					closed: currentFence.closed,
-				}
-				: mathBounds,
-			innerMathBounds: currentFence && fenceIsMath
-				? {
-					inner_start: currentFence.inner_start,
-					inner_end: currentFence.inner_end,
-					outer_start: currentFence.outer_start,
-					outer_end: currentFence.outer_end,
-					mode: "codeMath",
-					delimiter: currentFence.fence.repeat(currentFence.fenceLength),
-					closed: currentFence.closed,
-				}
-				: innerMathBounds,
+			mathBounds: mathFence ?? mathBounds,
+			innerMathBounds: mathFence ?? innerMathBounds,
 			codeBlock: currentFence,
 			codeBlockLanguage: currentFence?.language ?? null,
 			inlineCode: currentInlineCode,
@@ -964,7 +968,13 @@ export function parseContext(source: string, options: ContextScanOptions = {}): 
 			latexStack,
 		};
 	};
-	return { at };
+	return {
+		at,
+		get mathRegions() { return [...delimiterMath, ...mathFences.map(fenceMathBounds)]; },
+		unmatchedMathDelimiters,
+		get textArguments() { return allMacros.filter((macro) => macroMatches(macro, textAreas)); },
+		isIgnored: (offset) => latexIgnored.has(offset),
+	};
 }
 
 /** Convenience entry point for one-off scans and prospective edits. */

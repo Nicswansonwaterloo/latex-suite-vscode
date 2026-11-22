@@ -1,5 +1,8 @@
 import * as assert from "node:assert/strict";
 import * as vscode from "vscode";
+import { setTimeout as delay } from "node:timers/promises";
+import { parseContext } from "../core/context";
+import { registerMathHighlights } from "../editor/highlights";
 import { LatexSuiteController } from "../extension";
 
 // This suite runs in its own host and disposes the startup controller before
@@ -18,6 +21,54 @@ suite("controller lifecycle", () => {
 		output = vscode.window.createOutputChannel("Lifecycle tests", { log: true });
 	});
 	suiteTeardown(() => output.dispose());
+
+	test("cursor movement reuses bracket pairs and changing each setting clears its decorations", async () => {
+		const document = await vscode.workspace.openTextDocument({ language: "markdown", content: "$ ( ab ) $" });
+		const editor = await vscode.window.showTextDocument(document);
+		editor.selection = new vscode.Selection(0, 5, 0, 5);
+		const settings = vscode.workspace.getConfiguration("latexSuite", document);
+		const keys = ["highlighting.bracketPairs", "highlighting.matchingBracket", "highlighting.mathDelimiters"];
+		const previous = keys.map(key => settings.inspect<boolean>(key)?.globalValue);
+		const painted = new Map<string, string>();
+		// Observe a real editor: mocking only visibleTextEditors leaves the native
+		// visibility events able to remove the fake editor during host startup.
+		let registrations: vscode.Disposable | undefined;
+		const parsed = parseContext(document.getText());
+		let bracketVisits = 0;
+		const tracked = { ...parsed, isIgnored: (offset: number) => { bracketVisits++; return parsed.isIgnored(offset); } };
+		const colors = () => [...painted.values()].filter(Boolean).sort();
+		async function expectColors(expected: string[]) {
+			const deadline = Date.now() + 2000;
+			while (colors().join(",") !== expected.join(",") && Date.now() < deadline) {
+				await delay(20);
+			}
+			assert.deepEqual(colors(), expected);
+		}
+		try {
+			for (const key of keys) { await settings.update(key, true, vscode.ConfigurationTarget.Global); }
+			registrations = registerMathHighlights(() => tracked, (target, style, ranges) => {
+				if (target === editor) { painted.set(style.key, ranges.map(r => document.getText(r)).join("")); }
+				target.setDecorations(style, ranges);
+			});
+			await expectColors(["$$", "()"]);
+			const initialVisits = bracketVisits;
+			assert.ok(initialVisits > 0);
+			editor.selection = new vscode.Selection(0, 2, 0, 2);
+			await expectColors(["$$", "()", "()"]);
+			assert.equal(bracketVisits, initialVisits, "cursor movement reuses the bracket scan");
+
+			await settings.update(keys[0], false, vscode.ConfigurationTarget.Global);
+			await expectColors(["$$", "()"]);
+			await settings.update(keys[2], false, vscode.ConfigurationTarget.Global);
+			await expectColors(["()"]);
+			await settings.update(keys[1], false, vscode.ConfigurationTarget.Global);
+			await expectColors([]);
+		} finally {
+			registrations?.dispose();
+			for (const [index, key] of keys.entries()) { await settings.update(key, previous[index], vscode.ConfigurationTarget.Global); }
+			await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+		}
+	});
 
 	test("real disposal unregisters commands, cancels pending waits, and invalidates operations", async () => {
 		assert.equal((await vscode.commands.getCommands(true)).includes("latexSuite.internal.waitForIdle"), false);
